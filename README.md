@@ -19,7 +19,8 @@ npm run tauri dev
 3. GitHub Actions builds signed installers for Windows and macOS (Apple Silicon + Intel).
 4. Publish to Cloudflare — the app's auto-updater and the bloot apps hub pick it up:
    - automatically, when the `CLOUDFLARE_API_TOKEN` secret is set, or
-   - locally: `node scripts/publish.mjs --run <run-id>` (add `--dry-run` to preview).
+   - locally: `node scripts/publish.mjs --run <run-id>` (add `--dry-run` to preview). Wrangler must be logged in to
+     the Cloudflare account that runs api.bloot.app; `--cf-home <dir>` picks a wrangler login kept in its own folder.
 
 Files are served from `https://api.bloot.app/download/` (R2 bucket `qooti-releases`):
 `lynk-latest.json` for the updater and `apps/catalog.json` for the hub.

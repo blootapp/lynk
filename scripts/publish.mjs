@@ -9,8 +9,9 @@
 //   node scripts/publish.mjs --run <run-id> [--notes "What's new"] [--dry-run]
 //   node scripts/publish.mjs --dir <downloaded-artifacts> [...]
 //
-// Needs Cloudflare access: a logged-in `wrangler` locally, or CLOUDFLARE_API_TOKEN
-// in CI. The build must have been signed with the bloot release key — unsigned
+// Needs Cloudflare access to the account that runs api.bloot.app: a logged-in
+// `wrangler` locally (use --cf-home <dir> to pick a wrangler login kept in its
+// own folder), or CLOUDFLARE_API_TOKEN in CI. The build must have been signed with the bloot release key — unsigned
 // builds are refused, because neither the updater nor the hub would accept them.
 
 import { spawnSync } from 'node:child_process'
@@ -39,9 +40,18 @@ for (let i = 2; i < process.argv.length; i++) {
   else if (a === '--dir') args.dir = process.argv[++i]
   else if (a === '--notes') args.notes = process.argv[++i] ?? ''
   else if (a === '--dry-run') args.dryRun = true
+  else if (a === '--cf-home') args.cfHome = path.resolve(process.argv[++i])
   else fail(`Unknown argument: ${a}`)
 }
 if (!args.run && !args.dir) fail('Pass --run <github-run-id> or --dir <artifacts-dir>.')
+
+// Every R2 call below must reach the account that runs api.bloot.app — a
+// different login would quietly see an empty bucket.
+const who = wrangler(['whoami'], { quiet: true })
+if (!`${who.stdout}${who.stderr}`.includes(ACCOUNT_ID)) {
+  fail(`The Cloudflare login can't reach the api.bloot.app account (${ACCOUNT_ID}). ` +
+    'Log in with that account, or pass --cf-home <folder with that wrangler login>.')
+}
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'src-tauri', 'tauri.conf.json'), 'utf8')).version
 log(`Publishing Lynk ${version}${args.dryRun ? ' (dry run)' : ''}`)
@@ -163,19 +173,28 @@ put(CATALOG_KEY, catalogFile, 'application/json')
 
 // ── 5. Verify what the world now sees ────────────────────────────────────────
 
+// The Worker's /download route answers GET only, so no HEAD requests.
+const problems = []
 for (const u of uploads) {
-  const res = await fetch(`${DOWNLOAD_BASE}/${u.key}`, { method: 'HEAD' })
+  const res = await fetch(`${DOWNLOAD_BASE}/${u.key}`)
   const len = Number(res.headers.get('content-length'))
-  if (!res.ok || len !== fs.statSync(u.file).size) fail(`${u.key} isn't served correctly (HTTP ${res.status}, ${len} bytes)`)
+  await res.body?.cancel()
+  if (!res.ok || len !== fs.statSync(u.file).size) problems.push(`${u.key}: HTTP ${res.status}, ${len} bytes`)
 }
 const served = await (await fetch(`${DOWNLOAD_BASE}/${MANIFEST_KEY}`)).json()
-if (served.version !== version) fail(`Manifest still reports ${served.version}`)
+if (served.version !== version) problems.push(`manifest reports ${served.version}`)
 
 if (fs.existsSync(HUB_CATALOG)) {
   fs.writeFileSync(HUB_CATALOG, `${JSON.stringify(catalog, null, 2)}\n`)
   log(`Updated ${path.relative(ROOT, HUB_CATALOG)} to match.`)
 }
-log(`\n✓ Lynk ${version} is live.`)
+if (problems.length) {
+  // Not process.exit(): exiting while fetch sockets close crashes Node on Windows.
+  console.error(`✗ Uploaded, but not served correctly:\n  ${problems.join('\n  ')}`)
+  process.exitCode = 1
+} else {
+  log(`\n✓ Lynk ${version} is live.`)
+}
 log(`  Updates:   ${DOWNLOAD_BASE}/${MANIFEST_KEY}`)
 for (const u of uploads) log(`  Download:  ${DOWNLOAD_BASE}/${u.key}`)
 
@@ -189,7 +208,12 @@ function put(key, file, type) {
 function wrangler(argv, { quiet = false } = {}) {
   return spawnSync(process.execPath, [WRANGLER, ...argv], {
     stdio: quiet ? 'pipe' : ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID, WRANGLER_SEND_METRICS: 'false' },
+    env: {
+      ...process.env,
+      CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
+      WRANGLER_SEND_METRICS: 'false',
+      ...(args.cfHome ? { XDG_CONFIG_HOME: args.cfHome } : {}),
+    },
     encoding: 'utf8',
   })
 }
