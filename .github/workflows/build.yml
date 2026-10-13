@@ -59,6 +59,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          # Secrets pasted into GitHub often carry a trailing line break; the
+          # key is base64 (never contains whitespace) and line breaks are never
+          # part of the password.
+          export TAURI_SIGNING_PRIVATE_KEY="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | tr -d ' \r\n\t')"
+          export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" | tr -d '\r\n')"
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
             npx tauri build --target ${{ matrix.target }} --config '{"bundle":{"createUpdaterArtifacts":true}}'
           else
