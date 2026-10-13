@@ -27,6 +27,7 @@ const playlists = new Map()
 const queue = []
 const running = new Set()
 let clipboard = 'https://www.youtube.com/watch?v=YE7VzlLtp-4'
+let appUpdate = { state: 'current' }
 let engine = { version: '2026.06.09', updating: false, last_check: now - 30 * H, error: null, updated_to: null }
 
 window.__mock = { db, setClipboard: v => { clipboard = v } }
@@ -145,6 +146,12 @@ mockIPC(async (cmd, args = {}) => {
       engine = { ...engine, updating: true, error: null, updated_to: null }; emit('engine:status', engine)
       setTimeout(() => { engine = { ...engine, updating: false, version: '2026.08.19', updated_to: '2026.08.19', last_check: Date.now() }; emit('engine:status', engine) }, 2200)
       return null
+    case 'update_status': return { ...appUpdate }
+    case 'check_update':
+      appUpdate = { state: 'checking' }; emit('app:update', appUpdate)
+      setTimeout(() => { appUpdate = { state: 'ready', version: '0.2.0', notes: 'Faster playlists' }; emit('app:update', appUpdate) }, 1500)
+      return { ...appUpdate }
+    case 'install_update': console.info('[mock] install update'); return null
     case 'get_autostart': return true
     case 'set_autostart': return null
     case 'open_path': case 'reveal_path': case 'open_dir':

@@ -577,6 +577,22 @@ h2 { font: inherit; }
 .dock .icon-btn { width: 34px; height: 34px; }
 .dock-right { display: flex; gap: 2px; }
 
+.update-pill {
+  height: 28px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 99px;
+  background: var(--fill-2);
+  color: var(--text);
+  font-size: 12.5px;
+  transition: background var(--t-fast);
+  animation: fadeIn var(--t) var(--ease);
+}
+.update-pill:hover { background: var(--fill-3); }
+.update-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+
 /* ─── Panels ─────────────────────────────────────────────────────────────── */
 .panel {
   --row-hover: #151515;

@@ -103,7 +103,17 @@ export const t = {
   sAutoUpdate: 'Update automatically',
   sClearHistory: 'Clear history',
   engineUpdatedToast: v => `Engine updated to ${v}`,
-  about: v => `Lynk ${v}`,
+  sApp: 'App',
+  sAppVersion: v => `Lynk ${v}`,
+  updCheck: 'Check',
+  updChecking: 'Checking for updates…',
+  updDownloading: v => `Downloading ${v}…`,
+  updReady: v => `Version ${v} is ready`,
+  updCurrent: 'Up to date',
+  updRestart: 'Restart',
+  updPill: 'Update ready · Restart',
+  updRestartTitle: 'Restart to update?',
+  updRestartBody: n => `${n} download${n === 1 ? '' : 's'} will pause and pick up where ${n === 1 ? 'it' : 'they'} left off.`,
 
   // Format menu
   menuFormat: 'Format',

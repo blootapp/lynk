@@ -10,6 +10,7 @@ use crate::downloader::Manager;
 use crate::engine::{Engine, EngineStatus};
 use crate::model::{Download, NewDownload};
 use crate::system;
+use crate::updates::{self, UpdateStatus, Updates};
 
 type DbState<'a> = State<'a, Arc<Db>>;
 type ManagerState<'a> = State<'a, Arc<Manager>>;
@@ -240,6 +241,23 @@ pub fn engine_status(engine: EngineState) -> EngineStatus {
 pub fn engine_update(engine: EngineState) {
     let engine = engine.inner().clone();
     std::thread::spawn(move || engine.update());
+}
+
+// ── App updates ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn update_status(updates: State<'_, Arc<Updates>>) -> UpdateStatus {
+    updates.status()
+}
+
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> UpdateStatus {
+    updates::check(&app).await
+}
+
+#[tauri::command]
+pub fn install_update(app: AppHandle) -> Result<(), String> {
+    updates::install(&app)
 }
 
 // ── Launch at login ──────────────────────────────────────────────────────────

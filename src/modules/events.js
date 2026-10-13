@@ -13,6 +13,9 @@ export const EVENTS = {
   // App
   PREF_UPDATED:      'pref:updated',       // { key, value }
   ENGINE_STATUS:     'engine:status',      // EngineStatus
+  UPDATE_STATUS:     'update:status',      // UpdateStatus (app self-update)
+  UPDATE_CHECK:      'update:check',
+  UPDATE_INSTALL:    'update:install',
   PANEL_OPEN:        'panel:open',         // 'history' | 'settings'
   PANEL_OPENED:      'panel:opened',       // name
   PANEL_CLOSED:      'panel:closed',       // name

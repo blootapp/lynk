@@ -11,6 +11,7 @@ import * as downloads from './modules/downloads.js'
 import * as activeList from './modules/active-list.js'
 import * as history from './modules/history.js'
 import * as settings from './modules/settings.js'
+import * as updater from './modules/updater.js'
 
 async function main() {
   hydrateIcons()
@@ -52,6 +53,7 @@ async function main() {
 
   await downloads.init()
 
+  await updater.init()
   await api.onEngineStatus(s => store.emit(EVENTS.ENGINE_STATUS, s))
   store.emit(EVENTS.ENGINE_STATUS, await api.engineStatus())
 }

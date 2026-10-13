@@ -13,6 +13,7 @@ let platform = 'windows'
 let version = ''
 let engine = { version: null, updating: false, last_check: null, error: null, updated_to: null }
 let autostart = false
+let appUpdate = { state: 'idle' }
 
 export function init(appInfo) {
   body = document.getElementById('settings-body')
@@ -27,6 +28,7 @@ export function init(appInfo) {
     renderEngine()
     if (justUpdated) store.emit(EVENTS.TOAST, { message: t.engineUpdatedToast(s.updated_to), kind: 'success' })
   })
+  store.on(EVENTS.UPDATE_STATUS, s => { appUpdate = s; renderAppUpdate() })
   store.on(EVENTS.PANEL_OPENED, async name => {
     if (name !== 'settings') return
     renderEngine()
@@ -126,14 +128,46 @@ function render() {
       <label class="s-row" for="pref-autoupdate">${text(t.sAutoUpdate)}${toggle('pref-autoupdate', prefs.get('ytdlp_auto_update', 'true') !== 'false')}</label>
     </section>
 
+    <section class="s-section">
+      <div class="s-title">${t.sApp}</div>
+      <div class="s-row">
+        <div class="s-text">
+          <div class="s-label">${esc(t.sAppVersion(version))}</div>
+          <div class="s-sub" id="app-update-status"></div>
+        </div>
+        <button class="text-btn" id="btn-app-update"></button>
+      </div>
+    </section>
+
     <div class="s-foot">
-      <span>${esc(t.about(version))}</span>
+      <span></span>
       <button class="text-btn danger" id="btn-settings-clear">${t.sClearHistory}</button>
     </div>
   `
   renderSavePath()
   renderEngine()
+  renderAppUpdate()
   wire()
+}
+
+function renderAppUpdate() {
+  const s = body.querySelector('#app-update-status')
+  const b = body.querySelector('#btn-app-update')
+  if (!s) return
+  const u = appUpdate
+  s.className = 's-sub'
+  s.textContent = u.state === 'checking' ? t.updChecking
+    : u.state === 'downloading' ? t.updDownloading(u.version)
+    : u.state === 'ready' ? t.updReady(u.version)
+    : u.state === 'current' ? t.updCurrent
+    : u.state === 'error' ? u.error || ''
+    : ''
+  if (u.state === 'error') s.classList.add('error')
+  if (u.state === 'ready') s.classList.add('ok')
+  s.hidden = !s.textContent
+  b.hidden = u.state === 'checking' || u.state === 'downloading'
+  b.textContent = u.state === 'ready' ? t.updRestart : t.updCheck
+  b.dataset.mode = u.state === 'ready' ? 'install' : 'check'
 }
 
 function renderSavePath() {
@@ -206,6 +240,10 @@ function wire() {
     engine = { ...engine, updating: true, error: null, updated_to: null }
     renderEngine()
     api.engineUpdate()
+  })
+
+  on('#btn-app-update', 'click', e => {
+    store.emit(e.currentTarget.dataset.mode === 'install' ? EVENTS.UPDATE_INSTALL : EVENTS.UPDATE_CHECK)
   })
 
   on('#btn-settings-clear', 'click', async () => {

@@ -7,6 +7,7 @@ mod parse;
 mod process;
 mod staging;
 mod system;
+mod updates;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +32,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let db = Arc::new(Db::open()?);
             db.recover_interrupted()?;
@@ -54,6 +56,10 @@ pub fn run() {
             app.manage(db);
             app.manage(engine.clone());
             app.manage(manager);
+            app.manage(updates::Updates::new());
+            if !cfg!(debug_assertions) {
+                updates::start(app.handle().clone());
+            }
 
             build_tray(app)?;
 
@@ -104,6 +110,9 @@ pub fn run() {
             commands::engine_update,
             commands::get_autostart,
             commands::set_autostart,
+            commands::update_status,
+            commands::check_update,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
