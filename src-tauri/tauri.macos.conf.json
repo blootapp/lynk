@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Lynk",
+        "width": 400,
+        "height": 700,
+        "minWidth": 400,
+        "minHeight": 700,
+        "maxWidth": 400,
+        "maxHeight": 700,
+        "resizable": false,
+        "maximizable": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "theme": "Dark",
+        "center": true,
+        "visible": false,
+        "backgroundColor": "#0A0A0A",
+        "dragDropEnabled": false
+      }
+    ]
+  },
+  "bundle": {
+    "category": "Utility",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": false
+    }
+  }
+}

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lynk</title>
+  <link rel="stylesheet" href="./styles/global.css" />
+</head>
+<body>
+
+  <!-- Title bar (Windows only — Bloot §7) -->
+  <div id="title-bar" data-tauri-drag-region hidden>
+    <span class="title-bar-name">lynk<span class="title-bar-dot">·</span></span>
+    <div class="title-bar-controls">
+      <button id="btn-minimize" class="tb-btn tb-minimize" data-tip="minimise" aria-label="Minimise"></button>
+      <button id="btn-close" class="tb-btn tb-close" data-tip="close" aria-label="Close to tray"></button>
+    </div>
+  </div>
+
+  <!-- macOS: the native traffic lights sit over this strip (Overlay title bar) -->
+  <div id="mac-titlebar" class="mac-titlebar" data-tauri-drag-region hidden></div>
+
+  <div id="app">
+    <main class="main" id="main">
+      <div class="spacer" data-tauri-drag-region></div>
+
+      <section class="composer" aria-label="New download">
+        <div class="field" id="field">
+          <input
+            id="url-input"
+            type="text"
+            placeholder="Paste a link"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Link to download"
+          />
+          <button id="btn-paste" class="field-paste" type="button" title="Paste (Ctrl+V)">Paste</button>
+          <button id="btn-go" class="go" type="button" aria-label="Download" title="Download (Enter)">
+            <i data-icon="arrow-down" data-size="18"></i>
+          </button>
+        </div>
+
+        <div class="options">
+          <div class="segmented" id="format-toggle" role="radiogroup" aria-label="Download as">
+            <span class="seg-indicator" aria-hidden="true"></span>
+            <button class="seg-btn" role="radio" data-value="video" aria-checked="true">Video</button>
+            <button class="seg-btn" role="radio" data-value="audio" aria-checked="false">Audio</button>
+          </div>
+          <button id="format-btn" class="ghost-btn" aria-haspopup="menu" aria-expanded="false"></button>
+        </div>
+
+        <p class="hint" id="hint">Works with YouTube, TikTok, Instagram, X and 1,800&nbsp;more&nbsp;sites.</p>
+      </section>
+
+      <section class="activity" id="activity" aria-label="Downloads">
+        <div class="list-head">
+          <span id="activity-summary"></span>
+          <button class="text-btn" id="btn-clear-finished" hidden>Clear</button>
+        </div>
+        <div class="list" id="active-list"></div>
+      </section>
+
+      <div class="spacer bottom" data-tauri-drag-region></div>
+    </main>
+
+    <nav class="dock" data-tauri-drag-region>
+      <button id="btn-history" class="icon-btn" aria-label="History" title="History (Ctrl+H)">
+        <i data-icon="history" data-size="18"></i>
+      </button>
+      <div class="dock-right">
+        <button id="btn-open-folder" class="icon-btn" aria-label="Open download folder" title="Open download folder">
+          <i data-icon="folder" data-size="18"></i>
+        </button>
+        <button id="btn-settings" class="icon-btn" aria-label="Settings" title="Settings (Ctrl+,)">
+          <i data-icon="settings" data-size="18"></i>
+        </button>
+      </div>
+    </nav>
+
+    <!-- History (slides in from the left) -->
+    <aside id="history-panel" class="panel from-left" aria-label="History" tabindex="-1" inert>
+      <header class="panel-header" data-tauri-drag-region>
+        <h2 class="panel-title">History<span class="panel-count" id="history-count"></span></h2>
+        <button class="text-btn danger" id="btn-clear-history" hidden>Clear</button>
+        <button class="icon-btn" data-close-panel aria-label="Close history">
+          <i data-icon="x" data-size="18"></i>
+        </button>
+      </header>
+      <label class="search" id="history-search" hidden>
+        <i data-icon="search" data-size="15"></i>
+        <input type="text" id="history-query" placeholder="Search" spellcheck="false" autocomplete="off" />
+      </label>
+      <div class="panel-body">
+        <div class="history-list" id="history-list"></div>
+      </div>
+    </aside>
+
+    <!-- Settings (slides in from the right) -->
+    <aside id="settings-panel" class="panel" aria-label="Settings" tabindex="-1" inert>
+      <header class="panel-header" data-tauri-drag-region>
+        <h2 class="panel-title">Settings</h2>
+        <button class="icon-btn" data-close-panel aria-label="Close settings">
+          <i data-icon="x" data-size="18"></i>
+        </button>
+      </header>
+      <div class="panel-body">
+        <div class="settings" id="settings-body"></div>
+      </div>
+    </aside>
+
+    <div class="toast-root" id="toast-root" role="status" aria-live="polite"></div>
+    <div id="overlay-root"></div>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

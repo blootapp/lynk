@@ -1,0 +1,16 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Large third-party binaries — fetched by scripts/fetch-sidecars.sh
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+.claude/
+
+# Internal Bloot docs — not for the public repo
+md/
+
+# Local build outputs
+release-builds/
