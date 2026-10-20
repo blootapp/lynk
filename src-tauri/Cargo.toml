@@ -1,6 +1,6 @@
 [package]
 name = "lynk"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -22,6 +22,13 @@ serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-updater = "2"
+# deno + the PO-token provider for YouTube (youtube.rs). reqwest/rustls are
+# configured the same way as the updater plugin's, so nothing new is pulled in.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+sha2 = "0.10"
+flate2 = "1"
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

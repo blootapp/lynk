@@ -22,6 +22,7 @@ use crate::model::{now_ms, Download, NewDownload, PlaylistEntry, PlaylistPreview
 use crate::parse::{self, ArgSpec, Line, Meta, Tracker, PLAYLIST_LIMIT};
 use crate::process::{self, Killer};
 use crate::staging;
+use crate::youtube::{self, YouTube};
 
 const EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const INDICATOR_INTERVAL: Duration = Duration::from_millis(500);
@@ -30,6 +31,7 @@ pub struct Manager {
     app: AppHandle,
     db: Arc<Db>,
     engine: Arc<Engine>,
+    youtube: Arc<YouTube>,
     inner: Mutex<Inner>,
     shutting_down: AtomicBool,
     last_indicator: Mutex<Option<Instant>>,
@@ -71,8 +73,37 @@ struct RunState {
     last_emit: Option<Instant>,
 }
 
+struct Run {
+    st: RunState,
+    status: std::io::Result<std::process::ExitStatus>,
+}
+
+impl Run {
+    /// The last file yt-dlp reported writing, if it is still there.
+    fn produced(&self) -> Option<PathBuf> {
+        self.st.files.iter().rev().map(PathBuf::from).find(|p| p.is_file())
+    }
+
+    fn succeeded(&self) -> bool {
+        self.status.as_ref().is_ok_and(|s| s.success()) || self.produced().is_some()
+    }
+
+    /// yt-dlp's own words for why it failed.
+    fn error(&self) -> String {
+        self.st
+            .errors
+            .last()
+            .cloned()
+            .or_else(|| self.st.last_stderr.clone())
+            .unwrap_or_else(|| match &self.status {
+                Ok(s) => format!("yt-dlp exited with code {}", s.code().unwrap_or(-1)),
+                Err(e) => e.to_string(),
+            })
+    }
+}
+
 impl Manager {
-    pub fn new(app: AppHandle, db: Arc<Db>, engine: Arc<Engine>) -> Arc<Self> {
+    pub fn new(app: AppHandle, db: Arc<Db>, engine: Arc<Engine>, youtube: Arc<YouTube>) -> Arc<Self> {
         let max = db
             .pref("max_concurrent")
             .and_then(|v| v.parse().ok())
@@ -82,6 +113,7 @@ impl Manager {
             app,
             db,
             engine,
+            youtube,
             inner: Mutex::new(Inner { max_concurrent: max, ..Default::default() }),
             shutting_down: AtomicBool::new(false),
             last_indicator: Mutex::new(None),
@@ -390,6 +422,7 @@ impl Manager {
         for k in killers {
             k.kill();
         }
+        self.youtube.shutdown();
         for mut d in records {
             mark_finished(&mut d, "error");
             d.error_msg = Some("Interrupted".into());
@@ -475,56 +508,67 @@ impl Manager {
         };
         let dir = work_dir.to_string_lossy().to_string();
 
+        let youtube = youtube::is_youtube(&rec.url);
+        if youtube && self.youtube.deno_missing() {
+            self.update(&rec.id, true, |d| d.stage = Some("youtube".into()));
+            self.youtube.ensure_deno(cancel);
+            if cancel.load(Ordering::SeqCst) {
+                return Outcome::Cancelled;
+            }
+            self.update(&rec.id, true, |d| d.stage = Some("fetching".into()));
+        }
+
         let cookies = self.db.pref("cookies_browser");
         let ffmpeg = self.engine.ffmpeg();
-        let args = parse::build_args(&ArgSpec {
-            url: &rec.url,
-            format: &rec.format,
-            quality: &rec.quality,
-            audio_format: &rec.audio_format,
-            video_format: &rec.video_format,
-            prefer_h264: rec.prefer_h264,
-            dir: &dir,
-            name_prefix: rec.name_prefix.as_deref(),
-            ffmpeg: ffmpeg.as_deref(),
-            cookies_browser: cookies.as_deref(),
-        });
-
-        let mut cmd = process::command(&bin);
-        cmd.args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let (mut child, killer) = match process::spawn(cmd) {
-            Ok(x) => x,
-            Err(e) => return fail("Couldn't start the download engine.", Some(e.to_string())),
+        let deno = self.youtube.deno();
+        let args = |plugin_dir: Option<&Path>| {
+            parse::build_args(&ArgSpec {
+                url: &rec.url,
+                format: &rec.format,
+                quality: &rec.quality,
+                audio_format: &rec.audio_format,
+                video_format: &rec.video_format,
+                prefer_h264: rec.prefer_h264,
+                dir: &dir,
+                name_prefix: rec.name_prefix.as_deref(),
+                ffmpeg: ffmpeg.as_deref(),
+                cookies_browser: cookies.as_deref(),
+                js_runtime: deno.as_deref(),
+                plugin_dir,
+            })
         };
-        if let Some(r) = self.lock().running.get_mut(&rec.id) {
-            r.killer = Some(killer.clone());
-        }
-        if cancel.load(Ordering::SeqCst) {
-            killer.kill();
+
+        let mut run = match self.run(rec, &bin, &args(None), cancel) {
+            Ok(r) => r,
+            Err(outcome) => return outcome,
+        };
+        // YouTube refuses some requests outright ("not a bot", 403). A PO
+        // token from the local provider usually gets the same request through.
+        if youtube && !run.succeeded() && youtube::is_blocked(&run.error()) {
+            self.update(&rec.id, true, |d| {
+                d.status = "fetching".into();
+                d.stage = Some("youtube".into());
+                d.progress = 0.0;
+                d.speed = None;
+                d.eta = None;
+            });
+            let plugins = self.youtube.ensure_provider(cancel);
+            if cancel.load(Ordering::SeqCst) {
+                return Outcome::Cancelled;
+            }
+            if let Some(plugins) = plugins {
+                self.update(&rec.id, true, |d| d.stage = Some("retrying".into()));
+                run = match self.run(rec, &bin, &args(Some(&plugins)), cancel) {
+                    Ok(r) => r,
+                    Err(outcome) => return outcome,
+                };
+            }
         }
 
-        let (tx, rx) = mpsc::channel();
-        if let Some(out) = child.stdout.take() {
-            process::forward_lines(out, tx.clone(), false);
-        }
-        if let Some(err) = child.stderr.take() {
-            process::forward_lines(err, tx, true);
-        }
-
-        let mut st = RunState::default();
-        for (is_err, line) in rx.iter() {
-            self.handle_line(&rec.id, &mut st, is_err, &line);
-        }
-        let status = child.wait();
-        drop(killer);
-
-        if cancel.load(Ordering::SeqCst) {
-            return Outcome::Cancelled;
-        }
-        let success = status.as_ref().map(|s| s.success()).unwrap_or(false);
+        let success = run.status.as_ref().is_ok_and(|s| s.success());
+        let produced = run.produced();
+        let raw = run.error();
+        let Run { st, .. } = run;
 
         // A flat-listed playlist prints its entries and exits without
         // downloading anything.
@@ -553,21 +597,11 @@ impl Manager {
             return Outcome::Playlist { title, entries, total, nested };
         }
 
-        let produced = st.files.iter().rev().map(PathBuf::from).find(|p| p.is_file());
         if success || produced.is_some() {
             let file = produced.or_else(|| expected_outputs(rec, &st.expected).into_iter().find(|p| p.is_file()));
             return deliver(file, &save_dir, &rec.id);
         }
 
-        let raw = st
-            .errors
-            .last()
-            .cloned()
-            .or(st.last_stderr)
-            .unwrap_or_else(|| match status {
-                Ok(s) => format!("yt-dlp exited with code {}", s.code().unwrap_or(-1)),
-                Err(e) => e.to_string(),
-            });
         // Tagging/conversion failed but the media itself is on disk: keep it.
         if raw.to_lowercase().contains("postprocessing") {
             if let Some(f) = expected_outputs(rec, &st.expected).into_iter().find(|p| p.is_file()) {
@@ -575,6 +609,48 @@ impl Manager {
             }
         }
         Outcome::Failed { message: parse::humanize_error(&raw), detail: Some(parse::clean_error(&raw)) }
+    }
+
+    /// One yt-dlp process, start to finish.
+    fn run(&self, rec: &Download, bin: &Path, args: &[String], cancel: &AtomicBool) -> Result<Run, Outcome> {
+        let mut cmd = process::command(bin);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let (mut child, killer) = process::spawn(cmd).map_err(|e| Outcome::Failed {
+            message: "Couldn't start the download engine.".into(),
+            detail: Some(e.to_string()),
+        })?;
+        if let Some(r) = self.lock().running.get_mut(&rec.id) {
+            r.killer = Some(killer.clone());
+        }
+        if cancel.load(Ordering::SeqCst) {
+            killer.kill();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        if let Some(out) = child.stdout.take() {
+            process::forward_lines(out, tx.clone(), false);
+        }
+        if let Some(err) = child.stderr.take() {
+            process::forward_lines(err, tx, true);
+        }
+
+        let mut st = RunState::default();
+        for (is_err, line) in rx.iter() {
+            self.handle_line(&rec.id, &mut st, is_err, &line);
+        }
+        let status = child.wait();
+        if let Some(r) = self.lock().running.get_mut(&rec.id) {
+            r.killer = None;
+        }
+        drop(killer);
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err(Outcome::Cancelled);
+        }
+        Ok(Run { st, status })
     }
 
     fn handle_line(&self, id: &str, st: &mut RunState, is_err: bool, line: &str) {

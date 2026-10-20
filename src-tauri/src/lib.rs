@@ -8,6 +8,7 @@ mod process;
 mod staging;
 mod system;
 mod updates;
+mod youtube;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,7 @@ use tauri::{AppHandle, Manager as _, RunEvent, WindowEvent};
 use db::Db;
 use downloader::Manager;
 use engine::Engine;
+use youtube::YouTube;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,7 +52,8 @@ pub fn run() {
             }
 
             let engine = Arc::new(Engine::new(app.handle().clone(), db.clone()));
-            let manager = Manager::new(app.handle().clone(), db.clone(), engine.clone());
+            let youtube = Arc::new(YouTube::new());
+            let manager = Manager::new(app.handle().clone(), db.clone(), engine.clone(), youtube.clone());
             let sweeper = manager.clone();
             std::thread::spawn(move || sweeper.sweep_staging());
             app.manage(db);
@@ -83,6 +86,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(delay));
                 engine.prepare();
+                youtube.prefetch();
             });
             Ok(())
         })

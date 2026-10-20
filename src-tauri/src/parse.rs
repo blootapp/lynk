@@ -23,6 +23,10 @@ pub struct ArgSpec<'a> {
     pub name_prefix: Option<&'a str>,
     pub ffmpeg: Option<&'a Path>,
     pub cookies_browser: Option<&'a str>,
+    /// deno for YouTube's JS challenges.
+    pub js_runtime: Option<&'a Path>,
+    /// Plugin folder to load (the PO-token plugin); none on normal runs.
+    pub plugin_dir: Option<&'a Path>,
 }
 
 pub fn build_args(s: &ArgSpec) -> Vec<String> {
@@ -30,6 +34,10 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
     let mut a: Vec<String> = [
         "--encoding", "utf-8",
         "--no-update",
+        // A yt-dlp config or plugin the user set up for their own use must
+        // not change what Lynk asks for.
+        "--ignore-config",
+        "--no-plugin-dirs",
         "--newline",
         "--progress",
         "--no-simulate",
@@ -59,6 +67,14 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
     }
     if let Some(b) = s.cookies_browser.filter(|b| !b.is_empty()) {
         a.extend(["--cookies-from-browser".into(), b.to_string()]);
+    }
+    if let Some(deno) = s.js_runtime {
+        a.extend(["--js-runtimes".into(), format!("deno:{}", deno.to_string_lossy())]);
+    }
+    // A Node.js the user already has is a fallback for a missing deno.
+    a.extend(["--js-runtimes".into(), "node".into()]);
+    if let Some(dir) = s.plugin_dir {
+        a.extend(["--plugin-dirs".into(), dir.to_string_lossy().to_string()]);
     }
 
     if s.format == "audio" {
@@ -602,7 +618,7 @@ mod tests {
         let spec = ArgSpec {
             url: "--exec=calc", format: "video", quality: "1080p", audio_format: "mp3", video_format: "mp4",
             prefer_h264: true, dir: "C:\\x", name_prefix: Some("05 - 100% "), ffmpeg: None,
-            cookies_browser: Some(""),
+            cookies_browser: Some(""), js_runtime: None, plugin_dir: None,
         };
         let a = build_args(&spec);
         assert_eq!(a[a.len() - 2], "--");
@@ -610,6 +626,25 @@ mod tests {
         assert!(a.contains(&"05 - 100%% %(title).150B.%(ext)s".to_string()));
         assert!(!a.contains(&"--cookies-from-browser".to_string()));
         assert!(a.contains(&"res:1080,vcodec:h264,acodec:aac,ext:mp4:m4a".to_string()));
+        assert!(a.contains(&"--no-plugin-dirs".to_string()));
+        assert!(!a.contains(&"--plugin-dirs".to_string()));
+    }
+
+    #[test]
+    fn youtube_runtime_and_plugin_args() {
+        let deno = Path::new("C:\\Lynk\\bin\\deno.exe");
+        let plugins = Path::new("C:\\Lynk\\yt-dlp-plugins");
+        let spec = ArgSpec {
+            url: "https://youtu.be/x", format: "audio", quality: "best", audio_format: "mp3",
+            video_format: "mp4", prefer_h264: false, dir: "C:\\x", name_prefix: None,
+            ffmpeg: None, cookies_browser: None, js_runtime: Some(deno), plugin_dir: Some(plugins),
+        };
+        let a = build_args(&spec);
+        let at = |flag: &str| a.iter().position(|x| x == flag).unwrap();
+        assert_eq!(a[at("--js-runtimes") + 1], "deno:C:\\Lynk\\bin\\deno.exe");
+        // --plugin-dirs must come after --no-plugin-dirs, which resets the list.
+        assert!(at("--plugin-dirs") > at("--no-plugin-dirs"));
+        assert_eq!(a[at("--plugin-dirs") + 1], "C:\\Lynk\\yt-dlp-plugins");
     }
 
     #[test]
@@ -619,7 +654,7 @@ mod tests {
         let spec = ArgSpec {
             url: "https://x.y/v", format: "video", quality: "best", audio_format: "mp3",
             video_format: "mkv", prefer_h264: false, dir: "C:\\x", name_prefix: None,
-            ffmpeg: None, cookies_browser: None,
+            ffmpeg: None, cookies_browser: None, js_runtime: None, plugin_dir: None,
         };
         let a = build_args(&spec);
         let pos = a.iter().position(|x| x == "--merge-output-format").unwrap();

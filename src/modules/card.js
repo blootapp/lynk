@@ -60,6 +60,8 @@ function describe(d, ctx) {
       return {
         bar: 'indeterminate',
         text: d.stage === 'engine' ? t.updatingEngine
+          : d.stage === 'youtube' ? t.settingUpYouTube
+          : d.stage === 'retrying' ? t.retrying
           : d.stage === 'listing' ? t.readingPlaylist(d.playlist?.count)
           : t.fetching,
       }

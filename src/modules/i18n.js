@@ -18,6 +18,8 @@ export const t = {
   starting: 'Starting',
   fetching: 'Fetching info…',
   updatingEngine: 'Updating engine…',
+  settingUpYouTube: 'Setting up YouTube…',
+  retrying: 'Retrying…',
   readingPlaylist: n => (n ? `Reading playlist · ${n}` : 'Reading playlist…'),
   merging: 'Merging…',
   converting: fmt => `Converting to ${fmt}…`,
