@@ -30,6 +30,10 @@ async function main() {
     document.documentElement.classList.add('platform-windows')
     document.getElementById('btn-minimize').addEventListener('click', api.windowMinimize)
     document.getElementById('btn-close').addEventListener('click', quit)
+    // Unfocused window: the bar fades back (guide B8)
+    const root = document.documentElement
+    window.addEventListener('blur', () => root.classList.add('window-inactive'))
+    window.addEventListener('focus', () => root.classList.remove('window-inactive'))
   } else {
     document.getElementById('mac-titlebar').hidden = false
     document.documentElement.classList.add('platform-macos')

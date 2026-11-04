@@ -123,20 +123,20 @@ h2 { font: inherit; }
 .title-bar-dot { color: rgba(255,255,255,0.22); margin-left: 1px; }
 .title-bar-controls { display: flex; align-items: center; gap: 8px; }
 
+/* As in qooti: plain grey until hovered, only the hovered button takes its
+   colour, never a symbol inside; the bar fades back while unfocused (guide B8). */
 .tb-btn {
   position: relative;
   width: 14px; height: 14px;
   border-radius: 4px;
-  display: grid;
-  place-items: center;
-  transition: opacity 0.15s, transform 0.15s;
+  background: rgba(255,255,255,0.18);
+  transition: background 0.15s, transform 0.15s;
 }
-.tb-btn:hover { opacity: 0.8; transform: scale(1.12); }
-.tb-minimize { background: #FEBC2E; }
-.tb-close    { background: #FF5F57; }
-.tb-btn::after { font-size: 8px; font-weight: 700; line-height: 1; }
-.tb-minimize:hover::after { content: '─'; color: #7A5800; }
-.tb-close:hover::after    { content: '✕'; color: #7A1200; }
+.tb-btn:hover { transform: scale(1.1428); }   /* 14 → 16 px */
+.tb-minimize:hover { background: #FEBC2E; }
+.tb-close:hover    { background: #FF5F57; }
+.window-inactive .title-bar-name { color: rgba(255,255,255,0.25); }
+.window-inactive .tb-btn:not(:hover) { background: rgba(255,255,255,0.10); }
 .tb-btn::before {
   content: attr(data-tip);
   position: absolute;
@@ -149,7 +149,7 @@ h2 { font: inherit; }
   font-size: 11px;
   white-space: nowrap;
   opacity: 0;
-  transform: scale(calc(1 / 1.12));
+  transform: scale(calc(1 / 1.1428));
   transition: opacity var(--t) var(--ease);
   pointer-events: none;
 }

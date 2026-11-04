@@ -47,7 +47,12 @@
     "externalBin": [
       "binaries/yt-dlp",
       "binaries/ffmpeg"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/nsis-hooks.nsh"
+      }
+    }
   },
   "plugins": {
     "updater": {
