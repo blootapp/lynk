@@ -69,6 +69,8 @@ pub fn run() {
             build_tray(app)?;
 
             if let Some(w) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                set_taskbar_icon(&w);
                 // Closing the window quits Lynk. The page decides, like the X
                 // button: it asks first while downloads are running.
                 let page = w.clone();
@@ -159,6 +161,36 @@ mod tests {
     fn tray_template_embeds() {
         let img = super::tray_template();
         assert_eq!((img.width(), img.height()), (64, 64));
+    }
+}
+
+/// Gives the window its large icon, the one the taskbar shows. Tauri only sets
+/// the small one (title bar), so the taskbar fell back to the exe's icon from
+/// Windows' icon cache, which kept showing the old icon after an update.
+#[cfg(windows)]
+fn set_taskbar_icon(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, LoadImageW, SendMessageW, ICON_BIG, IMAGE_ICON, LR_DEFAULTCOLOR,
+        SM_CXICON, SM_CYICON, WM_SETICON,
+    };
+    let Ok(hwnd) = window.hwnd() else { return };
+    // The app icon tauri-build embeds (every size from 16 to 256 px).
+    let id = tauri::utils::platform::WINDOWS_APP_ICON_RESOURCE_ID as usize as *const u16;
+    // SAFETY: plain Win32 calls on our own module and window; the icon stays
+    // alive for the life of the process, as the window keeps using it.
+    unsafe {
+        let icon = LoadImageW(
+            GetModuleHandleW(std::ptr::null()),
+            id,
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON),
+            LR_DEFAULTCOLOR,
+        );
+        if !icon.is_null() {
+            SendMessageW(hwnd.0 as _, WM_SETICON, ICON_BIG as usize, icon as isize);
+        }
     }
 }
 

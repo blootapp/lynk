@@ -1,9 +1,9 @@
 ; Custom NSIS hooks for Lynk.
 ;
-; After an update replaces lynk.exe, Windows keeps showing the old icon on the
-; taskbar: the button takes it from the Start menu shortcut (same app id), and
-; that icon comes from the shell's icon cache. Tauri's installer only sends
-; SHCNE_ASSOCCHANGED, which doesn't refresh it; ie4uinit -show does.
+; After an update replaces lynk.exe, the shortcuts (desktop, Start, pinned)
+; can keep showing its old icon from the shell's icon cache. Tauri's installer
+; only sends SHCNE_ASSOCCHANGED, which doesn't refresh it; ie4uinit -show does.
+; (The running window's taskbar button is set by the app itself, lib.rs.)
 ;
 ; The installer is 32-bit, so $SYSDIR is SysWOW64 on 64-bit Windows, and
 ; ie4uinit.exe lives only in the real System32 (Sysnative from here).
