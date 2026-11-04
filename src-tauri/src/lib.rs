@@ -164,9 +164,10 @@ mod tests {
     }
 }
 
-/// Gives the window its large icon, the one the taskbar shows. Tauri only sets
-/// the small one (title bar), so the taskbar fell back to the exe's icon from
-/// Windows' icon cache, which kept showing the old icon after an update.
+/// Gives the window its large icon (Alt+Tab, and the taskbar when no shortcut
+/// matches). Tauri only sets the small one (title bar). Normally the taskbar
+/// draws the icon of lynk's shortcut instead, so the installer points those at
+/// a fresh icon file, see `windows/nsis-hooks.nsh`.
 #[cfg(windows)]
 fn set_taskbar_icon(window: &tauri::WebviewWindow) {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
