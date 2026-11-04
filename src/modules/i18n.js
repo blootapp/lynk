@@ -116,6 +116,9 @@ export const t = {
   updPill: 'Update ready · Restart',
   updRestartTitle: 'Restart to update?',
   updRestartBody: n => `${n} download${n === 1 ? '' : 's'} will pause and pick up where ${n === 1 ? 'it' : 'they'} left off.`,
+  quitTitle: 'Quit lynk?',
+  quitBody: n => `${n} download${n === 1 ? '' : 's'} will stop. Retry picks ${n === 1 ? 'it' : 'them'} up where ${n === 1 ? 'it' : 'they'} left off.`,
+  quit: 'Quit',
 
   // Format menu
   menuFormat: 'Format',

@@ -6,7 +6,6 @@ import { open as dialogOpen } from '@tauri-apps/plugin-dialog'
 
 export const getAppInfo     = () => invoke('get_app_info')
 export const windowMinimize = () => invoke('window_minimize')
-export const windowHide     = () => invoke('window_hide')
 export const appQuit        = () => invoke('app_quit')
 
 // ── Preferences ──────────────────────────────────────────────────────────────
@@ -54,3 +53,5 @@ export const onDownloadUpdate  = cb => listen('download:update', e => cb(e.paylo
 export const onDownloadRemoved = cb => listen('download:removed', e => cb(e.payload))
 export const onEngineStatus    = cb => listen('engine:status', e => cb(e.payload))
 export const onUpdateStatus    = cb => listen('app:update', e => cb(e.payload))
+/** The window's own close (Alt+F4, the macOS close button, the taskbar). */
+export const onCloseRequested  = cb => listen('app:close-requested', () => cb())

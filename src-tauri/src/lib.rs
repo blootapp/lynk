@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager as _, RunEvent, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager as _, RunEvent, WindowEvent};
 
 use db::Db;
 use downloader::Manager;
@@ -69,11 +69,13 @@ pub fn run() {
             build_tray(app)?;
 
             if let Some(w) = app.get_webview_window("main") {
-                let hide = w.clone();
+                // Closing the window quits Lynk. The page decides, like the X
+                // button: it asks first while downloads are running.
+                let page = w.clone();
                 w.on_window_event(move |e| {
                     if let WindowEvent::CloseRequested { api, .. } = e {
                         api.prevent_close();
-                        let _ = hide.hide();
+                        let _ = page.emit("app:close-requested", ());
                     }
                 });
                 if !start_hidden {
@@ -103,7 +105,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::window_minimize,
-            commands::window_hide,
             commands::app_quit,
             commands::get_preferences,
             commands::set_preference,

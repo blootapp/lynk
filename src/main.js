@@ -12,6 +12,8 @@ import * as activeList from './modules/active-list.js'
 import * as history from './modules/history.js'
 import * as settings from './modules/settings.js'
 import * as updater from './modules/updater.js'
+import { confirm } from './modules/dialog.js'
+import { t } from './modules/i18n.js'
 
 async function main() {
   hydrateIcons()
@@ -27,7 +29,7 @@ async function main() {
     document.getElementById('title-bar').hidden = false
     document.documentElement.classList.add('platform-windows')
     document.getElementById('btn-minimize').addEventListener('click', api.windowMinimize)
-    document.getElementById('btn-close').addEventListener('click', api.windowHide)
+    document.getElementById('btn-close').addEventListener('click', quit)
   } else {
     document.getElementById('mac-titlebar').hidden = false
     document.documentElement.classList.add('platform-macos')
@@ -52,10 +54,27 @@ async function main() {
   })
 
   await downloads.init()
+  await api.onCloseRequested(quit)
 
   await updater.init()
   await api.onEngineStatus(s => store.emit(EVENTS.ENGINE_STATUS, s))
   store.emit(EVENTS.ENGINE_STATUS, await api.engineStatus())
+}
+
+let quitting = false
+
+/** X and the window's own close quit Lynk — it doesn't run on in the
+ *  background. Asks first while downloads are running. */
+async function quit() {
+  if (quitting) return
+  quitting = true
+  try {
+    const n = downloads.activeCount()
+    if (n && !(await confirm({ title: t.quitTitle, message: t.quitBody(n), confirmLabel: t.quit, destructive: true }))) return
+    await api.appQuit()
+  } finally {
+    quitting = false
+  }
 }
 
 /** Escape closes the innermost thing: menu → panel. */

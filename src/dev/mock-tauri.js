@@ -156,7 +156,7 @@ mockIPC(async (cmd, args = {}) => {
     case 'set_autostart': return null
     case 'open_path': case 'reveal_path': case 'open_dir':
       console.info(`[mock] ${cmd}`, args.path); return null
-    case 'window_minimize': case 'window_hide': case 'app_quit': return null
+    case 'window_minimize': case 'app_quit': return null
     case 'plugin:dialog|open': return 'D:\\Media\\Lynk'
     default:
       console.warn('[mock] unhandled command', cmd, args)

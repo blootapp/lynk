@@ -54,12 +54,8 @@ pub fn window_minimize(window: WebviewWindow) {
     let _ = window.minimize();
 }
 
-/// The close button hides to the tray (Bloot §7.4); downloads keep going.
-#[tauri::command]
-pub fn window_hide(window: WebviewWindow) {
-    let _ = window.hide();
-}
-
+/// The close button quits: Lynk doesn't keep running in the background.
+/// Downloads still running are stopped and can be retried.
 #[tauri::command]
 pub fn app_quit(app: AppHandle, manager: ManagerState) {
     manager.shutdown();

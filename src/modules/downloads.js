@@ -6,9 +6,17 @@ import { store } from './store.js'
 import { EVENTS } from './events.js'
 import { t } from './i18n.js'
 import { extractUrls, normalizeUrl } from './links.js'
+import { isActive } from './card.js'
 
 const records = new Map()
 const IN_FLIGHT = new Set(['queued', 'fetching', 'downloading', 'processing', 'playlist'])
+
+/** How many downloads are waiting or running right now. */
+export function activeCount() {
+  let n = 0
+  for (const d of records.values()) if (isActive(d)) n++
+  return n
+}
 
 export async function init() {
   // Handle intents right away — a link submitted during startup must not be lost.
