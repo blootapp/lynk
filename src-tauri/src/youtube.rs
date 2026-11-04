@@ -5,6 +5,9 @@
 //!   skip them, which YouTube is phasing out. deno is fetched once, pinned and
 //!   SHA-256-verified, into the app data folder — shortly after launch, or
 //!   right before the first YouTube download if that comes first.
+//! - The right player clients ([`CLIENTS`]). When YouTube rate-limits a
+//!   connection it answers yt-dlp's default clients with "Sign in to confirm
+//!   you're not a bot"; the embedded player still gets the streams.
 //! - A PO-token provider (bgutil), used only to retry a YouTube download that
 //!   was blocked ("not a bot", 403). It is a ~250 MB local server, so it is
 //!   downloaded the first time it's needed, runs on 127.0.0.1:4416 and stops
@@ -37,6 +40,16 @@ const POT_PORT: u16 = 4416;
 const POT_IDLE: Duration = Duration::from_secs(15 * 60);
 /// After a failed setup, don't make every download wait on another attempt.
 const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// Player clients for a normal run: yt-dlp's defaults plus the embedded
+/// player. Once YouTube rate-limits the watch page (HTTP 429) it turns every
+/// default client away as a bot, while the embedded player still gets the
+/// streams, without a PO token. It costs one extra request per video.
+pub const CLIENTS: &str = "default,web_embedded";
+/// Player clients for the PO-token retry: the ones that use the provider's
+/// tokens (mweb gets them even while the watch page is blocked), then the
+/// embedded player again.
+pub const TOKEN_CLIENTS: &str = "mweb,web,web_embedded";
 
 const PLUGIN_FILES: [(&str, &str); 2] = [
     ("getpot_bgutil.py", include_str!("../vendor/bgutil-ytdlp-pot-provider/getpot_bgutil.py")),

@@ -26,11 +26,14 @@ pub struct ArgSpec<'a> {
     /// deno for YouTube's JS challenges.
     pub js_runtime: Option<&'a Path>,
     /// Plugin folder to load (the PO-token plugin); none on normal runs.
+    /// YouTube then also switches to the clients that use its tokens.
     pub plugin_dir: Option<&'a Path>,
 }
 
 pub fn build_args(s: &ArgSpec) -> Vec<String> {
-    let prefix = s.name_prefix.unwrap_or("").replace('%', "%%");
+    let youtube = crate::youtube::is_youtube(s.url);
+    let raw_prefix = s.name_prefix.unwrap_or("");
+    let prefix = raw_prefix.replace('%', "%%");
     let mut a: Vec<String> = [
         "--encoding", "utf-8",
         "--no-update",
@@ -61,7 +64,8 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
 
     a.extend(["--playlist-end".into(), PLAYLIST_LIMIT.to_string()]);
     a.extend(["-P".into(), s.dir.to_string()]);
-    a.extend(["-o".into(), format!("{prefix}%(title).150B.%(ext)s")]);
+    let title = title_bytes(s.dir, raw_prefix, cfg!(windows));
+    a.extend(["-o".into(), format!("{prefix}%(title).{title}B.%(ext)s")]);
     if let Some(ff) = s.ffmpeg {
         a.extend(["--ffmpeg-location".into(), ff.to_string_lossy().to_string()]);
     }
@@ -76,6 +80,12 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
     if let Some(dir) = s.plugin_dir {
         a.extend(["--plugin-dirs".into(), dir.to_string_lossy().to_string()]);
     }
+    if youtube {
+        // One combined value: a second `--extractor-args youtube:…` would
+        // replace this one, not add to it.
+        let clients = if s.plugin_dir.is_some() { crate::youtube::TOKEN_CLIENTS } else { crate::youtube::CLIENTS };
+        a.extend(["--extractor-args".into(), format!("youtube:player_client={clients}")]);
+    }
 
     if s.format == "audio" {
         let selector = if s.audio_format == "m4a" { "ba[ext=m4a]/ba/b" } else { "ba/b" };
@@ -86,7 +96,7 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
         );
     } else {
         let mkv = s.video_format == "mkv";
-        a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), video_sort(s.quality, s.prefer_h264, mkv)]);
+        a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), video_sort(s.quality, s.prefer_h264, mkv, youtube)]);
         // MKV holds any codec, so everything can be remuxed into it losslessly.
         let (container, remux) = if mkv { ("mkv", "mkv") } else { ("mp4", "mkv>mp4/webm>mp4/mov>mp4") };
         a.extend(
@@ -104,25 +114,52 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
 
 /// Format-sort string. An explicit resolution wins over the codec preference
 /// (picking "4K" should give 4K even though YouTube has no 4K H.264); with
-/// "best", H.264 preference caps at the best H.264 stream. MP4 additionally
-/// prefers AAC audio and MP4/M4A sources; MKV takes the best audio as-is.
-pub fn video_sort(quality: &str, prefer_h264: bool, mkv: bool) -> String {
+/// "best", H.264 preference caps at the best H.264 stream — on YouTube at
+/// 1080p outright, so a video whose H.264 stops lower still comes in its
+/// best stream up to 1080p.
+///
+/// The picture decides before any audio field. Ranked ahead of resolution,
+/// the AAC preference made YouTube's one combined stream (360p, sometimes
+/// with a dubbed audio track) beat every 1080p one. At equal picture, direct
+/// https beats HLS and a video-only stream (merged with the best audio)
+/// beats a combined one. The audio fields then pick the audio stream: the
+/// original language, and for MP4 AAC and MP4/M4A sources; MKV takes the
+/// best audio as-is.
+pub fn video_sort(quality: &str, prefer_h264: bool, mkv: bool, youtube: bool) -> String {
     let mut sort: Vec<String> = Vec::new();
-    if let Some(h) = quality_height(quality) {
-        sort.push(format!("res:{h}"));
+    match quality_height(quality) {
+        Some(h) => sort.push(format!("res:{h}")),
+        None if prefer_h264 && youtube => sort.push("res:1080".into()),
+        None => {}
     }
     if prefer_h264 {
         sort.push("vcodec:h264".into());
     }
+    if !sort.iter().any(|f| f.starts_with("res")) {
+        sort.push("res".into());
+    }
+    sort.extend(["fps", "proto", "+hasaud", "lang"].map(String::from));
     if !mkv {
         // AAC audio is native to MP4 — no transcode, plays everywhere.
         sort.push("acodec:aac".into());
         sort.push("ext:mp4:m4a".into());
     }
-    if sort.is_empty() {
-        sort.push("res".into());
-    }
     sort.join(",")
+}
+
+/// Longest title, in UTF-8 bytes, that keeps every file yt-dlp writes into
+/// `dir` within Windows' 260-character path limit, which applies unless long
+/// paths are switched on system-wide. A UTF-8 byte count never undercounts
+/// UTF-16 units, so this holds for any script.
+fn title_bytes(dir: &str, prefix: &str, windows: bool) -> usize {
+    const MAX: usize = 150;
+    if !windows {
+        return MAX;
+    }
+    // "<dir>\" + prefix + title + the longest suffix yt-dlp adds while it
+    // works (".f140-27.m4a.part-Frag1234").
+    let used = dir.encode_utf16().count() + 1 + prefix.encode_utf16().count() + 30;
+    250usize.saturating_sub(used).clamp(40, MAX)
 }
 
 fn quality_height(q: &str) -> Option<u32> {
@@ -411,6 +448,11 @@ pub fn humanize_error(raw: &str) -> String {
     if has(&["not a bot", "confirm you’re not", "confirm you're not"]) {
         return "YouTube asked to verify you're not a bot. Wait a bit and retry, or pick your browser under Settings › Sign-in cookies.".into();
     }
+    // Chrome and other Chromium browsers seal their cookies to themselves on
+    // Windows; closing the browser doesn't help.
+    if has(&["failed to decrypt with dpapi", "app-bound", "app bound"]) {
+        return "This browser locks its cookies on Windows. Choose Firefox under Settings › Sign-in cookies.".into();
+    }
     if has(&["could not copy chrome cookie", "could not copy", "failed to decrypt", "cookie database", "could not find"]) && l.contains("cookie") {
         return "Couldn't read cookies from your browser. Close the browser and retry, or choose another browser in Settings.".into();
     }
@@ -606,6 +648,8 @@ mod tests {
         assert!(humanize_error(bot).contains("not a bot"));
         assert!(humanize_error("unable to download video data: HTTP Error 403: Forbidden").contains("403"));
         assert!(humanize_error("[generic] Unsupported URL: https://x.y").contains("isn't supported"));
+        assert!(humanize_error("Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info").contains("Firefox"));
+        assert!(humanize_error("Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info").contains("Close the browser"));
         assert!(humanize_error("[soundcloud] Unable to download webpage: ('Connection aborted.', ConnectionResetError(10054, 'An existing connection was forcibly closed'))").contains("Network"));
         assert_eq!(
             humanize_error("[vimeo] 123: Something odd happened. See  https://github.com/x for help"),
@@ -625,9 +669,68 @@ mod tests {
         assert_eq!(a[a.len() - 1], "--exec=calc");
         assert!(a.contains(&"05 - 100%% %(title).150B.%(ext)s".to_string()));
         assert!(!a.contains(&"--cookies-from-browser".to_string()));
-        assert!(a.contains(&"res:1080,vcodec:h264,acodec:aac,ext:mp4:m4a".to_string()));
+        assert!(a.contains(&"res:1080,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a".to_string()));
         assert!(a.contains(&"--no-plugin-dirs".to_string()));
         assert!(!a.contains(&"--plugin-dirs".to_string()));
+        assert!(!a.contains(&"--extractor-args".to_string()));
+    }
+
+    /// Sorted ahead of resolution, an audio preference let YouTube's combined
+    /// 360p stream ("18", AAC) beat every 1080p video-only stream.
+    #[test]
+    fn picture_is_ranked_before_audio() {
+        assert_eq!(
+            video_sort("best", true, false, true),
+            "res:1080,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
+        );
+        assert_eq!(
+            video_sort("best", true, false, false),
+            "vcodec:h264,res,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
+        );
+        assert_eq!(video_sort("best", false, false, true), "res,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
+        assert_eq!(video_sort("2160p", true, false, true), "res:2160,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
+        for (q, h264, mkv, yt) in [("best", true, false, true), ("best", false, false, false), ("360p", true, false, true)] {
+            let s = video_sort(q, h264, mkv, yt);
+            let at = |f: &str| s.find(f).unwrap();
+            assert!(at("res") < at("acodec") && at("fps") < at("acodec") && at("+hasaud") < at("lang"), "{s}");
+        }
+    }
+
+    #[test]
+    fn youtube_player_clients() {
+        let deno = Path::new("C:\\Lynk\\bin\\deno.exe");
+        let plugins = Path::new("C:\\Lynk\\yt-dlp-plugins");
+        let spec = |url, plugin_dir| ArgSpec {
+            url, format: "video", quality: "best", audio_format: "mp3", video_format: "mp4",
+            prefer_h264: true, dir: "C:\\x", name_prefix: None, ffmpeg: None,
+            cookies_browser: None, js_runtime: Some(deno), plugin_dir,
+        };
+        let value = |a: &[String]| {
+            let i = a.iter().position(|x| x == "--extractor-args")?;
+            (a.iter().filter(|x| *x == "--extractor-args").count() == 1).then(|| a[i + 1].clone())
+        };
+        assert_eq!(
+            value(&build_args(&spec("https://youtu.be/x", None))).as_deref(),
+            Some("youtube:player_client=default,web_embedded")
+        );
+        assert_eq!(
+            value(&build_args(&spec("https://www.youtube.com/watch?v=x", Some(plugins)))).as_deref(),
+            Some("youtube:player_client=mweb,web,web_embedded")
+        );
+        assert_eq!(value(&build_args(&spec("https://vimeo.com/1", None))), None);
+    }
+
+    #[test]
+    fn titles_fit_windows_paths() {
+        let id = "\\.lynk-partial\\0f8fad5b-d9cb-469f-a165-70867728950e";
+        let short = format!("C:\\Users\\me\\Downloads\\Lynk{id}");
+        assert_eq!(title_bytes(&short, "", true), 142);
+        assert_eq!(title_bytes("C:\\x", "", true), 150);
+        let deep = format!("C:\\Users\\Windows 11\\Downloads\\Lynk\\{}{id}", "P".repeat(80));
+        let n = title_bytes(&deep, "001 - ", true);
+        assert!(n < 100 && deep.len() + 1 + 6 + n + 30 <= 250, "{n}");
+        assert_eq!(title_bytes(&"D".repeat(300), "", true), 40);
+        assert_eq!(title_bytes(&deep, "001 - ", false), 150);
     }
 
     #[test]
@@ -649,8 +752,8 @@ mod tests {
 
     #[test]
     fn mkv_takes_best_audio_and_remuxes_everything() {
-        assert_eq!(video_sort("best", false, true), "res");
-        assert_eq!(video_sort("720p", true, true), "res:720,vcodec:h264");
+        assert_eq!(video_sort("best", false, true, true), "res,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("720p", true, true, false), "res:720,vcodec:h264,fps,proto,+hasaud,lang");
         let spec = ArgSpec {
             url: "https://x.y/v", format: "video", quality: "best", audio_format: "mp3",
             video_format: "mkv", prefer_h264: false, dir: "C:\\x", name_prefix: None,

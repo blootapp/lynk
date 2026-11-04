@@ -108,7 +108,7 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
         .take()
         .ok_or("No update is ready yet.")?;
     if let Some(m) = app.try_state::<Arc<Manager>>() {
-        m.shutdown();
+        m.shutdown_for_restart();
     }
     // On Windows this hands over to the installer and exits the process.
     update

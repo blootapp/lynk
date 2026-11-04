@@ -56,6 +56,8 @@ pub fn run() {
             let manager = Manager::new(app.handle().clone(), db.clone(), engine.clone(), youtube.clone());
             let sweeper = manager.clone();
             std::thread::spawn(move || sweeper.sweep_staging());
+            manager.resume_after_restart();
+            let idle = manager.clone();
             app.manage(db);
             app.manage(engine.clone());
             app.manage(manager);
@@ -87,6 +89,14 @@ pub fn run() {
                 std::thread::sleep(Duration::from_secs(delay));
                 engine.prepare();
                 youtube.prefetch();
+                // Later checks wait until nothing is downloading, so the
+                // binary is never replaced under a starting download.
+                loop {
+                    std::thread::sleep(Duration::from_secs(60 * 60));
+                    if !idle.is_busy() {
+                        engine.update_if_due();
+                    }
+                }
             });
             Ok(())
         })

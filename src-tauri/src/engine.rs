@@ -109,7 +109,13 @@ impl Engine {
             let _ = self.db.set_pref("ytdlp_version", v);
         }
         self.set_status(|s| s.version = version);
+        self.update_if_due();
+    }
 
+    /// The daily update check. Runs at launch and again while Lynk stays
+    /// open — it lives in the tray for days, and YouTube breaks old yt-dlp
+    /// versions within weeks.
+    pub fn update_if_due(&self) {
         let auto = self.db.pref("ytdlp_auto_update").as_deref() != Some("false");
         let due = self
             .status()

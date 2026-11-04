@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use tauri::window::{ProgressBarState, ProgressBarStatus};
@@ -27,12 +27,24 @@ use crate::youtube::{self, YouTube};
 const EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const INDICATOR_INTERVAL: Duration = Duration::from_millis(500);
 
+/// yt-dlp prints a line every few seconds while it works (requests, progress,
+/// retries). This much silence means it hung — on a JS challenge or a dead
+/// connection — and would hold its slot, and for YouTube the gate, forever.
+const STALL_EXTRACTING: Duration = Duration::from_secs(120);
+const STALL_DOWNLOADING: Duration = Duration::from_secs(300);
+/// Merging or converting a long video prints nothing until it's done.
+const STALL_PROCESSING: Duration = Duration::from_secs(30 * 60);
+
+/// Ids an update restart stopped, queued again on the next launch.
+const RESUME_PREF: &str = "resume_after_restart";
+
 pub struct Manager {
     app: AppHandle,
     db: Arc<Db>,
     engine: Arc<Engine>,
     youtube: Arc<YouTube>,
     inner: Mutex<Inner>,
+    youtube_gate: Gate,
     shutting_down: AtomicBool,
     last_indicator: Mutex<Option<Instant>>,
 }
@@ -69,8 +81,25 @@ struct RunState {
     errors: Vec<String>,
     last_stderr: Option<String>,
     expected: Option<String>,
+    /// The video's info is in (format chosen); requests to the site are over.
+    extracted: bool,
     downloading: bool,
+    processing: bool,
+    /// Killed by the watchdog after going silent.
+    stalled: bool,
     last_emit: Option<Instant>,
+}
+
+impl RunState {
+    fn stall_limit(&self) -> Duration {
+        if self.processing {
+            STALL_PROCESSING
+        } else if self.downloading {
+            STALL_DOWNLOADING
+        } else {
+            STALL_EXTRACTING
+        }
+    }
 }
 
 struct Run {
@@ -115,6 +144,7 @@ impl Manager {
             engine,
             youtube,
             inner: Mutex::new(Inner { max_concurrent: max, ..Default::default() }),
+            youtube_gate: Gate::default(),
             shutting_down: AtomicBool::new(false),
             last_indicator: Mutex::new(None),
         })
@@ -135,6 +165,12 @@ impl Manager {
     /// In-memory records (with live progress) for everything unfinished.
     pub fn snapshot(&self) -> Vec<Download> {
         self.lock().active.values().cloned().collect()
+    }
+
+    /// Whether anything is queued or running.
+    pub fn is_busy(&self) -> bool {
+        let inner = self.lock();
+        !inner.running.is_empty() || !inner.queue.is_empty()
     }
 
     // ── Public operations ────────────────────────────────────────────────────
@@ -303,11 +339,13 @@ impl Manager {
     }
 
     /// Startup: drop staging folders that no failed download could resume.
+    /// Runs alongside `resume_after_restart`, so anything already queued
+    /// again keeps its folder too.
     pub fn sweep_staging(&self) {
         let Ok(rows) = self.db.list() else { return };
         let keep = rows
             .iter()
-            .filter(|d| d.status == "error")
+            .filter(|d| d.status == "error" || d.is_active())
             .map(|d| d.id.clone())
             .collect();
         let mut dirs: Vec<PathBuf> =
@@ -430,6 +468,57 @@ impl Manager {
         }
     }
 
+    /// `shutdown` for a restart into an update: what it stops is queued again
+    /// on the next launch (`resume_after_restart`), as the restart prompt says.
+    pub fn shutdown_for_restart(&self) {
+        let ids: Vec<String> = self
+            .lock()
+            .active
+            .values()
+            .filter(|d| d.is_active())
+            .map(|d| d.id.clone())
+            .collect();
+        if !ids.is_empty() {
+            let _ = self.db.set_pref(RESUME_PREF, &ids.join(","));
+        }
+        self.shutdown();
+    }
+
+    /// Startup: queues again what an update restart stopped, in its original
+    /// order and keeping its place in the list. Partial files make each one
+    /// pick up where it left off.
+    pub fn resume_after_restart(self: &Arc<Self>) {
+        let Some(ids) = self.db.pref(RESUME_PREF).filter(|v| !v.is_empty()) else { return };
+        let _ = self.db.set_pref(RESUME_PREF, "");
+        let mut records: Vec<Download> = ids
+            .split(',')
+            .filter_map(|id| self.db.get(id).ok().flatten())
+            .filter(|d| d.status == "error")
+            .collect();
+        if records.is_empty() {
+            return;
+        }
+        records.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        for d in records.iter_mut() {
+            d.reset_for_run();
+        }
+        if self.db.save_many(&records).is_err() {
+            return;
+        }
+        {
+            let mut inner = self.lock();
+            for d in &records {
+                inner.active.insert(d.id.clone(), d.clone());
+                inner.queue.push_back(d.id.clone());
+            }
+        }
+        for d in &records {
+            self.emit(d);
+        }
+        self.pump();
+        self.refresh_indicators(true);
+    }
+
     // ── Scheduling ───────────────────────────────────────────────────────────
 
     fn pump(self: &Arc<Self>) {
@@ -544,7 +633,7 @@ impl Manager {
         };
         // YouTube refuses some requests outright ("not a bot", 403). A PO
         // token from the local provider usually gets the same request through.
-        if youtube && !run.succeeded() && youtube::is_blocked(&run.error()) {
+        if youtube && !run.st.stalled && !run.succeeded() && youtube::is_blocked(&run.error()) {
             self.update(&rec.id, true, |d| {
                 d.status = "fetching".into();
                 d.stage = Some("youtube".into());
@@ -567,6 +656,12 @@ impl Manager {
 
         let success = run.status.as_ref().is_ok_and(|s| s.success());
         let produced = run.produced();
+        if run.st.stalled && produced.is_none() {
+            // Partial files stay for the retry. The detail is what yt-dlp
+            // last said, not the exit code of the kill.
+            let last = run.st.errors.last().or(run.st.last_stderr.as_ref()).cloned();
+            return fail("The download stopped responding. Retry to pick up where it left off.", last);
+        }
         let raw = run.error();
         let Run { st, .. } = run;
 
@@ -613,6 +708,11 @@ impl Manager {
 
     /// One yt-dlp process, start to finish.
     fn run(&self, rec: &Download, bin: &Path, args: &[String], cancel: &AtomicBool) -> Result<Run, Outcome> {
+        let mut gate = if youtube::is_youtube(&rec.url) {
+            Some(self.youtube_gate.enter(cancel).ok_or(Outcome::Cancelled)?)
+        } else {
+            None
+        };
         let mut cmd = process::command(bin);
         cmd.args(args)
             .stdin(Stdio::null())
@@ -638,9 +738,27 @@ impl Manager {
         }
 
         let mut st = RunState::default();
-        for (is_err, line) in rx.iter() {
-            self.handle_line(&rec.id, &mut st, is_err, &line);
+        let mut last_line = Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok((is_err, line)) => {
+                    last_line = Instant::now();
+                    self.handle_line(&rec.id, &mut st, is_err, &line);
+                    if st.extracted {
+                        drop(gate.take());
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !st.stalled && last_line.elapsed() >= st.stall_limit() {
+                        st.stalled = true;
+                        killer.kill();
+                    }
+                }
+                // Both pipes closed: the process is gone (or going).
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
         }
+        drop(gate);
         let status = child.wait();
         if let Some(r) = self.lock().running.get_mut(&rec.id) {
             r.killer = None;
@@ -677,6 +795,7 @@ impl Manager {
                         });
                     });
                 } else {
+                    st.extracted = true;
                     if m.playlist_index.is_some() {
                         st.entries.push((*m).clone());
                     }
@@ -707,6 +826,7 @@ impl Manager {
                 }
             }
             Line::Progress(p) => {
+                st.extracted = true;
                 st.downloading = true;
                 let stage = st.tracker.on_progress(&p);
                 let progress = st.tracker.progress;
@@ -727,6 +847,7 @@ impl Manager {
                 if !started || (!st.downloading && !st.entries.is_empty()) {
                     return;
                 }
+                st.processing = true;
                 if let Some(stage) = parse::postprocess_stage(&name) {
                     self.update(id, true, |d| {
                         d.status = "processing".into();
@@ -947,6 +1068,45 @@ impl Manager {
             };
             let _ = tray.set_tooltip(Some(tip));
         }
+    }
+}
+
+/// Lets one YouTube run at a time through extraction, the burst of requests
+/// before the first byte. Several at once (a playlist, three slots) is what
+/// gets a connection rate-limited and then asked to "confirm you're not a
+/// bot". The downloads themselves still run side by side.
+#[derive(Default)]
+struct Gate {
+    busy: Mutex<bool>,
+    freed: Condvar,
+}
+
+/// Holding the gate; dropping it lets the next run in.
+struct Pass<'a>(&'a Gate);
+
+impl Gate {
+    /// Waits for the gate; `None` when the download is cancelled meanwhile.
+    fn enter(&self, cancel: &AtomicBool) -> Option<Pass<'_>> {
+        let mut busy = self.busy.lock().unwrap_or_else(|e| e.into_inner());
+        while *busy {
+            if cancel.load(Ordering::SeqCst) {
+                return None;
+            }
+            busy = self
+                .freed
+                .wait_timeout(busy, Duration::from_millis(200))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        *busy = true;
+        Some(Pass(self))
+    }
+}
+
+impl Drop for Pass<'_> {
+    fn drop(&mut self) {
+        *self.0.busy.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.0.freed.notify_one();
     }
 }
 
