@@ -116,39 +116,49 @@ const manifest = {
 
 const tmp = path.join(dir, '.publish')
 fs.mkdirSync(tmp, { recursive: true })
-let catalog
-const live = path.join(tmp, 'catalog.before.json')
-if (wrangler(['r2', 'object', 'get', `${BUCKET}/${CATALOG_KEY}`, '--file', live], { quiet: true }).status === 0) {
-  catalog = JSON.parse(fs.readFileSync(live, 'utf8'))
-  log(`Live catalogue backed up to ${path.relative(ROOT, live)}`)
-} else if (fs.existsSync(HUB_CATALOG)) {
-  catalog = JSON.parse(fs.readFileSync(HUB_CATALOG, 'utf8'))
-  log(`No live catalogue in R2 yet — starting from ${path.relative(ROOT, HUB_CATALOG)}`)
-} else {
-  fail('No hub catalogue found (neither in R2 nor in ../bloot-apps).')
-}
 
-const products = (catalog.products ??= [])
-let lynk = products.find(p => p.id === 'lynk')
-if (!lynk) {
-  lynk = {
-    id: 'lynk', name: 'lynk', kind: 'app',
-    tagline: 'Download anything you link — fast, free, no ads.',
-    requires_account: false, pricing: 'free',
-    detect: {
-      windows: { uninstall_key: 'Lynk', exe: 'Lynk.exe' },
-      darwin: { bundle: 'Lynk.app', bundle_id: 'app.bloot.lynk' },
-    },
-    color: '#0338FA',
+/** The catalogue with this release in the lynk entry. `mustBeLive`: read it
+ *  from R2 or stop — never fall back to the local copy, which may be older. */
+function catalogWithLynk(file, { mustBeLive = false } = {}) {
+  let catalog
+  const got = wrangler(['r2', 'object', 'get', `${BUCKET}/${CATALOG_KEY}`, '--file', file], { quiet: true })
+  // A login that can't see the bucket may still exit 0 with an empty file.
+  if (got.status === 0 && fs.existsSync(file) && fs.statSync(file).size > 0) {
+    catalog = JSON.parse(fs.readFileSync(file, 'utf8'))
+    log(`Live catalogue backed up to ${path.relative(ROOT, file)}`)
+  } else if (mustBeLive) {
+    fail(`Couldn't read the live catalogue again. The files and ${MANIFEST_KEY} are up; run again to finish.`)
+  } else if (fs.existsSync(HUB_CATALOG)) {
+    catalog = JSON.parse(fs.readFileSync(HUB_CATALOG, 'utf8'))
+    log(`No live catalogue in R2 yet — starting from ${path.relative(ROOT, HUB_CATALOG)}`)
+  } else {
+    fail('No hub catalogue found (neither in R2 nor in ../bloot-apps).')
   }
-  products.push(lynk)
-}
-delete lynk.coming_soon
-lynk.platforms = Object.fromEntries(Object.entries(targets).map(([p, t]) => [p, {
-  version, install: t.install, url: t.url, size: t.size, sha256: t.sha256, signature: t.signature,
-}]))
-catalog.updated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z')
 
+  const products = (catalog.products ??= [])
+  let lynk = products.find(p => p.id === 'lynk')
+  if (!lynk) {
+    lynk = {
+      id: 'lynk', name: 'lynk', kind: 'app',
+      tagline: 'Download anything you link — fast, free, no ads.',
+      requires_account: false, pricing: 'free',
+      detect: {
+        windows: { uninstall_key: 'Lynk', exe: 'Lynk.exe' },
+        darwin: { bundle: 'Lynk.app', bundle_id: 'app.bloot.lynk' },
+      },
+      color: '#0338FA',
+    }
+    products.push(lynk)
+  }
+  delete lynk.coming_soon
+  lynk.platforms = Object.fromEntries(Object.entries(targets).map(([p, t]) => [p, {
+    version, install: t.install, url: t.url, size: t.size, sha256: t.sha256, signature: t.signature,
+  }]))
+  catalog.updated_at = new Date().toISOString().replace(/\.\d+Z$/, 'Z')
+  return catalog
+}
+
+let catalog = catalogWithLynk(path.join(tmp, 'catalog.before.json'))
 const manifestFile = path.join(tmp, MANIFEST_KEY)
 const catalogFile = path.join(tmp, 'catalog.json')
 fs.writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`)
@@ -168,6 +178,10 @@ for (const u of uploads) {
 }
 log(`↑ ${MANIFEST_KEY}`)
 put(MANIFEST_KEY, manifestFile, 'application/json')
+// The uploads above take minutes and other products publish into the same
+// catalogue: read it again, so whatever they changed meanwhile survives.
+catalog = catalogWithLynk(path.join(tmp, 'catalog.before-write.json'), { mustBeLive: true })
+fs.writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`)
 log(`↑ ${CATALOG_KEY}`)
 put(CATALOG_KEY, catalogFile, 'application/json')
 
