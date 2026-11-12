@@ -7,8 +7,11 @@ import { esc, syncSegmented, setChecked } from './dom.js'
 import { icon } from './icons.js'
 import { relativeTime } from './format.js'
 import { confirm } from './dialog.js'
+import { openMenu, closeMenu } from './popover.js'
 
 let body
+/** The dropdowns, by id: the pref each one sets and the choices it offers. */
+let selects = {}
 let platform = 'windows'
 let version = ''
 let engine = { version: null, updating: false, last_check: null, error: null, updated_to: null }
@@ -44,13 +47,18 @@ export function init(appInfo) {
 
 // ── Markup ───────────────────────────────────────────────────────────────────
 
-const select = (id, options, value) => `
-  <span class="select">
-    <select id="${id}">
-      ${options.map(o => `<option value="${esc(o.value)}"${o.value === value ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
-    </select>
+// A dropdown is a button that opens lynk's own menu, like the format button
+// next to the link field. A native <select> would open a list the system
+// draws in its own style. Every choice sits in the same grid cell and only the
+// current one shows, so the button is as wide as the longest choice and keeps
+// its size when another one is picked.
+const select = id => `
+  <button class="select" id="${id}" type="button" aria-haspopup="menu" aria-expanded="false">
+    <span class="select-value">
+      ${selects[id].options.map(o => `<span data-value="${esc(o.value)}">${esc(o.label)}</span>`).join('')}
+    </span>
     ${icon('chevron-down', 14)}
-  </span>`
+  </button>`
 
 const toggle = (id, checked) => `
   <span class="switch">
@@ -76,12 +84,16 @@ function render() {
     : t.cookieBrowsers
   const short = items => items.map(({ value, label }) => ({ value, label }))
   const parallel = ['1', '2', '3', '4', '5'].map(v => ({ value: v, label: v }))
+  selects = {
+    'pref-quality': { key: 'default_quality', fallback: 'best', label: t.sQuality, options: t.qualityOptions },
+    'pref-cookies': { key: 'cookies_browser', fallback: '', label: t.sCookies, options: cookieOptions },
+  }
 
   body.innerHTML = `
     <section class="s-section">
       <div class="s-title">${t.sVideo}</div>
       <div class="s-row">${text(t.sFormat)}${segmented('pref-vformat', short(t.videoFormats), prefs.get('video_format', 'mp4'))}</div>
-      <div class="s-row">${text(t.sQuality)}${select('pref-quality', t.qualityOptions, prefs.get('default_quality', 'best'))}</div>
+      <div class="s-row">${text(t.sQuality)}${select('pref-quality')}</div>
       <label class="s-row" for="pref-h264">${text(t.sPreferH264, t.sPreferH264Sub)}${toggle('pref-h264', prefs.get('prefer_h264', 'true') !== 'false')}</label>
     </section>
 
@@ -105,7 +117,7 @@ function render() {
 
     <section class="s-section">
       <div class="s-title">${t.sSignIn}</div>
-      <div class="s-row">${text(t.sCookies, t.sCookiesSub)}${select('pref-cookies', cookieOptions, prefs.get('cookies_browser', ''))}</div>
+      <div class="s-row">${text(t.sCookies, t.sCookiesSub)}${select('pref-cookies')}</div>
     </section>
 
     <section class="s-section">
@@ -144,10 +156,25 @@ function render() {
       <button class="text-btn danger" id="btn-settings-clear">${t.sClearHistory}</button>
     </div>
   `
+  for (const [id, s] of Object.entries(selects)) setSelect(id, prefs.get(s.key, s.fallback))
   renderSavePath()
   renderEngine()
   renderAppUpdate()
   wire()
+}
+
+/** Shows `value` as the dropdown's current choice. */
+function setSelect(id, value) {
+  const btn = body.querySelector(`#${id}`)
+  if (!btn) return
+  btn.dataset.value = value
+  let label = ''
+  for (const choice of btn.querySelectorAll('.select-value > span')) {
+    const on = choice.dataset.value === value
+    choice.classList.toggle('on', on)
+    if (on) label = choice.textContent
+  }
+  btn.setAttribute('aria-label', `${selects[id].label}: ${label}`)
 }
 
 function renderAppUpdate() {
@@ -206,12 +233,28 @@ function renderEngine() {
 function wire() {
   const on = (sel, ev, fn) => body.querySelector(sel)?.addEventListener(ev, fn)
 
-  on('#pref-quality', 'change', e => prefs.set('default_quality', e.target.value))
   on('#pref-h264', 'change', e => prefs.set('prefer_h264', e.target.checked))
   on('#pref-ask', 'change', e => prefs.set('ask_save_path', e.target.checked))
   on('#pref-notify', 'change', e => prefs.set('notifications', e.target.checked))
   on('#pref-autoupdate', 'change', e => prefs.set('ytdlp_auto_update', e.target.checked))
-  on('#pref-cookies', 'change', e => prefs.set('cookies_browser', e.target.value))
+
+  for (const [id, s] of Object.entries(selects)) {
+    const btn = body.querySelector(`#${id}`)
+    const isOpen = () => btn.getAttribute('aria-expanded') === 'true'
+    const open = () => openMenu(btn, [{
+      items: s.options,
+      value: btn.dataset.value,
+      onSelect: v => prefs.set(s.key, v),
+    }])
+    btn.addEventListener('click', () => (isOpen() ? closeMenu() : open()))
+    // As on a native dropdown, the arrow keys open it too.
+    btn.addEventListener('keydown', e => {
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !isOpen()) {
+        e.preventDefault()
+        open()
+      }
+    })
+  }
 
   for (const [id, key] of [['#pref-vformat', 'video_format'], ['#pref-audio', 'audio_format'], ['#pref-parallel', 'max_concurrent']]) {
     on(id, 'click', e => {
@@ -267,8 +310,8 @@ function syncControl(key, value) {
     return
   }
   switch (key) {
-    case 'default_quality': if (q('#pref-quality')) q('#pref-quality').value = value; break
-    case 'cookies_browser': if (q('#pref-cookies')) q('#pref-cookies').value = value; break
+    case 'default_quality': setSelect('pref-quality', value); break
+    case 'cookies_browser': setSelect('pref-cookies', value); break
     case 'prefer_h264': if (q('#pref-h264')) q('#pref-h264').checked = value !== 'false'; break
     case 'ask_save_path': if (q('#pref-ask')) q('#pref-ask').checked = value === 'true'; break
     case 'notifications': if (q('#pref-notify')) q('#pref-notify').checked = value !== 'false'; break

@@ -8,7 +8,7 @@ import { esc, syncSegmented, setChecked, isEditable } from './dom.js'
 import { icon } from './icons.js'
 import { qualityShort } from './format.js'
 import { extractUrls, normalizeUrl } from './links.js'
-import { openMenu, isMenuOpen } from './popover.js'
+import { openMenu, closeMenu, isMenuOpen } from './popover.js'
 
 let input, field, pasteBtn, goBtn, formatToggle, formatBtn
 let format = 'video'
@@ -122,7 +122,8 @@ function renderFormatBtn() {
 }
 
 function openFormatMenu() {
-  if (formatBtn.getAttribute('aria-expanded') === 'true') return
+  // A second click closes it, as on the dropdowns in Settings.
+  if (formatBtn.getAttribute('aria-expanded') === 'true') return closeMenu()
   if (format === 'audio') {
     openMenu(formatBtn, [{
       label: t.menuFormat,

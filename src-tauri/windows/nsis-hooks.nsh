@@ -77,6 +77,11 @@ FunctionEnd
   Push $2
   Push $3
 
+  ; Builds before 0.1.4 shipped yt-dlp as one file next to lynk.exe; it now
+  ; comes as the yt-dlp folder (see engine.rs). Tauri leaves files a build no
+  ; longer ships, and this one would also keep uninstall from removing $INSTDIR.
+  Delete "$INSTDIR\yt-dlp.exe"
+
   StrCpy $LynkExe "$INSTDIR\${MAINBINARYNAME}.exe"
   StrCpy $LynkDesktop "$DESKTOP\${PRODUCTNAME}.lnk"
   StrCpy $LynkIcon "$INSTDIR\${MAINBINARYNAME}-${LYNK_ICON_TAG}.ico"

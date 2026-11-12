@@ -5,6 +5,7 @@
 //! events to the UI. The UI never writes download state back.
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,6 +17,7 @@ use tauri::{AppHandle, Emitter, Manager as _};
 use tauri_plugin_notification::NotificationExt;
 use uuid::Uuid;
 
+use crate::convert;
 use crate::db::Db;
 use crate::engine::Engine;
 use crate::model::{now_ms, Download, NewDownload, PlaylistEntry, PlaylistPreview};
@@ -34,6 +36,11 @@ const STALL_EXTRACTING: Duration = Duration::from_secs(120);
 const STALL_DOWNLOADING: Duration = Duration::from_secs(300);
 /// Merging or converting a long video prints nothing until it's done.
 const STALL_PROCESSING: Duration = Duration::from_secs(30 * 60);
+
+/// ffmpeg reports progress twice a second while it converts.
+const CONVERT_STALL: Duration = Duration::from_secs(120);
+const CONVERT_FAILED: &str =
+    "Couldn't convert the video to H.264 for editing apps. Retry, or pick MKV in Settings to keep it as downloaded.";
 
 /// Ids an update restart stopped, queued again on the next launch.
 const RESUME_PREF: &str = "resume_after_restart";
@@ -562,11 +569,12 @@ impl Manager {
             detail,
         };
         // An outdated yt-dlp is the most common cause of failures, so let an
-        // update that is already running finish first.
-        if self.engine.is_updating() {
+        // update that is already running finish first — where it replaces
+        // the very file downloads run (see engine.rs).
+        if self.engine.blocks_downloads() {
             self.update(&rec.id, true, |d| d.stage = Some("engine".into()));
             let started = Instant::now();
-            while self.engine.is_updating()
+            while self.engine.blocks_downloads()
                 && started.elapsed() < Duration::from_secs(90)
                 && !cancel.load(Ordering::SeqCst)
             {
@@ -694,6 +702,11 @@ impl Manager {
 
         if success || produced.is_some() {
             let file = produced.or_else(|| expected_outputs(rec, &st.expected).into_iter().find(|p| p.is_file()));
+            if let Some(f) = &file {
+                if let Err(outcome) = self.make_editable(rec, f, cancel) {
+                    return outcome;
+                }
+            }
             return deliver(file, &save_dir, &rec.id);
         }
 
@@ -769,6 +782,136 @@ impl Manager {
             return Err(Outcome::Cancelled);
         }
         Ok(Run { st, status })
+    }
+
+    /// Converts a finished MP4 whose picture isn't H.264, or whose sound not
+    /// every MP4 reader takes, in its staging folder (see convert.rs). MKV
+    /// and audio downloads are left as they are.
+    fn make_editable(&self, rec: &Download, file: &Path, cancel: &AtomicBool) -> Result<(), Outcome> {
+        if rec.format == "audio" || rec.video_format == "mkv" {
+            return Ok(());
+        }
+        if !file.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) {
+            return Ok(());
+        }
+        let Some(ffmpeg) = self.engine.ffmpeg() else { return Ok(()) };
+        let Some(info) = convert::probe(&ffmpeg, file) else { return Ok(()) };
+        let Some(plan) = convert::plan(&info) else { return Ok(()) };
+
+        self.update(&rec.id, true, |d| {
+            d.status = "processing".into();
+            d.stage = Some("h264".into());
+            d.progress = 0.0;
+            d.speed = None;
+            d.eta = None;
+        });
+        let tmp = file.with_extension("h264.mp4");
+        let encoders = if plan.video { convert::encoders(&ffmpeg) } else { vec![convert::Encoder::X264] };
+        let mut last = String::new();
+        for enc in encoders {
+            let args = convert::args(file, &tmp, plan, enc, info.height);
+            match self.run_ffmpeg(&rec.id, &ffmpeg, &args, info.duration, cancel) {
+                Ok(()) => {
+                    return std::fs::rename(&tmp, file).map_err(|e| {
+                        let _ = std::fs::remove_file(&tmp);
+                        Outcome::Failed { message: CONVERT_FAILED.into(), detail: Some(e.to_string()) }
+                    });
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(Outcome::Cancelled);
+                    }
+                    last = format!("{}: {e}", enc.name());
+                }
+            }
+        }
+        // The download stays in its staging folder: a retry converts it again
+        // without downloading it again.
+        Err(Outcome::Failed { message: CONVERT_FAILED.into(), detail: Some(last) })
+    }
+
+    /// One ffmpeg run, its `-progress` shown as the card's progress and ETA.
+    fn run_ffmpeg(
+        &self,
+        id: &str,
+        ffmpeg: &Path,
+        args: &[OsString],
+        duration: Option<f64>,
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        let mut cmd = process::command(ffmpeg);
+        cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (mut child, killer) = process::spawn(cmd).map_err(|e| e.to_string())?;
+        if let Some(r) = self.lock().running.get_mut(id) {
+            r.killer = Some(killer.clone());
+        }
+        if cancel.load(Ordering::SeqCst) {
+            killer.kill();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        if let Some(out) = child.stdout.take() {
+            process::forward_lines(out, tx.clone(), false);
+        }
+        if let Some(err) = child.stderr.take() {
+            process::forward_lines(err, tx, true);
+        }
+
+        let (mut last_line, mut last_emit) = (Instant::now(), None::<Instant>);
+        let (mut speed, mut error, mut stalled) = (None, None, false);
+        loop {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok((is_err, line)) => {
+                    last_line = Instant::now();
+                    if is_err {
+                        if !line.trim().is_empty() {
+                            error = Some(line.trim().to_string());
+                        }
+                        continue;
+                    }
+                    if let Some(s) = convert::progress_speed(&line) {
+                        speed = Some(s);
+                    }
+                    let (Some(done), Some(total)) = (convert::progress_seconds(&line), duration) else { continue };
+                    let now = Instant::now();
+                    if last_emit.is_some_and(|t| now - t < EMIT_INTERVAL) {
+                        continue;
+                    }
+                    last_emit = Some(now);
+                    let progress = (done / total * 100.0).clamp(0.0, 99.9);
+                    let eta = speed.map(|s| ((total - done) / s).max(0.0));
+                    self.update(id, true, |d| {
+                        d.progress = progress;
+                        d.eta = eta;
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !stalled && last_line.elapsed() >= CONVERT_STALL {
+                        stalled = true;
+                        killer.kill();
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        let status = child.wait();
+        if let Some(r) = self.lock().running.get_mut(id) {
+            r.killer = None;
+        }
+        drop(killer);
+
+        if cancel.load(Ordering::SeqCst) {
+            return Err("cancelled".into());
+        }
+        if stalled {
+            return Err("ffmpeg stopped responding".into());
+        }
+        match status {
+            Ok(s) if s.success() => Ok(()),
+            Ok(s) => Err(error.unwrap_or_else(|| format!("ffmpeg exited with code {}", s.code().unwrap_or(-1)))),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn handle_line(&self, id: &str, st: &mut RunState, is_err: bool, line: &str) {

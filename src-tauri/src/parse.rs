@@ -112,11 +112,24 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
     a
 }
 
+/// Tallest picture "Best" takes for MP4. Above 4K a site has nothing but AV1,
+/// which would have to be converted (see `convert.rs`) at a size no H.264
+/// GPU encoder takes.
+const MP4_MAX_HEIGHT: u32 = 2160;
+
 /// Format-sort string. An explicit resolution wins over the codec preference
-/// (picking "4K" should give 4K even though YouTube has no 4K H.264); with
-/// "best", H.264 preference caps at the best H.264 stream — on YouTube at
-/// 1080p outright, so a video whose H.264 stops lower still comes in its
-/// best stream up to 1080p.
+/// (picking "4K" should give 4K even though YouTube has no 4K H.264).
+///
+/// MP4 is the format that opens everywhere, editing apps included, so its
+/// video ends up H.264: Premiere Pro and After Effects import VP9 or AV1 as
+/// sound with no picture. Ranked right after the resolution, H.264 wins
+/// whenever the site has it at that size. When it doesn't (YouTube has no
+/// H.264 above 1080p), the file is converted after the download, so VP9 comes
+/// before AV1 (ffmpeg decodes it far faster) and SDR before HDR, which an
+/// 8-bit H.264 copy can't show. "Prefer H.264" keeps the site's own H.264
+/// stream, so there's nothing to convert: on YouTube that caps "best" at
+/// 1080p; elsewhere the codec ranks before the resolution. MKV takes the
+/// streams as served.
 ///
 /// The picture decides before any audio field. Ranked ahead of resolution,
 /// the AAC preference made YouTube's one combined stream (360p, sometimes
@@ -130,13 +143,17 @@ pub fn video_sort(quality: &str, prefer_h264: bool, mkv: bool, youtube: bool) ->
     match quality_height(quality) {
         Some(h) => sort.push(format!("res:{h}")),
         None if prefer_h264 && youtube => sort.push("res:1080".into()),
-        None => {}
+        None if mkv || prefer_h264 => {}
+        None => sort.push(format!("res:{MP4_MAX_HEIGHT}")),
     }
-    if prefer_h264 {
+    if prefer_h264 || !mkv {
         sort.push("vcodec:h264".into());
     }
     if !sort.iter().any(|f| f.starts_with("res")) {
-        sort.push("res".into());
+        sort.push(if mkv { "res".into() } else { format!("res:{MP4_MAX_HEIGHT}") });
+    }
+    if !mkv {
+        sort.push("+hdr".into());
     }
     sort.extend(["fps", "proto", "+hasaud", "lang"].map(String::from));
     if !mkv {
@@ -669,7 +686,7 @@ mod tests {
         assert_eq!(a[a.len() - 1], "--exec=calc");
         assert!(a.contains(&"05 - 100%% %(title).150B.%(ext)s".to_string()));
         assert!(!a.contains(&"--cookies-from-browser".to_string()));
-        assert!(a.contains(&"res:1080,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a".to_string()));
+        assert!(a.contains(&"res:1080,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a".to_string()));
         assert!(a.contains(&"--no-plugin-dirs".to_string()));
         assert!(!a.contains(&"--plugin-dirs".to_string()));
         assert!(!a.contains(&"--extractor-args".to_string()));
@@ -681,19 +698,32 @@ mod tests {
     fn picture_is_ranked_before_audio() {
         assert_eq!(
             video_sort("best", true, false, true),
-            "res:1080,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
+            "res:1080,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
         );
         assert_eq!(
             video_sort("best", true, false, false),
-            "vcodec:h264,res,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
+            "vcodec:h264,res:2160,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
         );
-        assert_eq!(video_sort("best", false, false, true), "res,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
-        assert_eq!(video_sort("2160p", true, false, true), "res:2160,vcodec:h264,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
+        assert_eq!(video_sort("2160p", true, false, true), "res:2160,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
         for (q, h264, mkv, yt) in [("best", true, false, true), ("best", false, false, false), ("360p", true, false, true)] {
             let s = video_sort(q, h264, mkv, yt);
             let at = |f: &str| s.find(f).unwrap();
             assert!(at("res") < at("acodec") && at("fps") < at("acodec") && at("+hasaud") < at("lang"), "{s}");
         }
+    }
+
+    /// Premiere Pro and After Effects import a VP9 or AV1 MP4 as sound with no
+    /// picture. Every MP4 sort ranks H.264 right after the resolution (VP9
+    /// before AV1 for what still needs converting) and SDR first; "best"
+    /// stops at 4K. MKV takes the streams as served.
+    #[test]
+    fn mp4_ranks_h264_after_resolution() {
+        let mp4 = |rest: &str| format!("{rest},+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
+        assert_eq!(video_sort("best", false, false, true), mp4("res:2160,vcodec:h264"));
+        assert_eq!(video_sort("2160p", false, false, true), mp4("res:2160,vcodec:h264"));
+        assert_eq!(video_sort("720p", false, false, false), mp4("res:720,vcodec:h264"));
+        assert_eq!(video_sort("best", false, true, true), "res,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("2160p", false, true, true), "res:2160,fps,proto,+hasaud,lang");
     }
 
     #[test]

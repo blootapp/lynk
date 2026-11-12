@@ -71,6 +71,12 @@ function describe(d, ctx) {
       return { bar: 'progress', text: join(...parts) }
     }
     case 'processing': {
+      // Re-encoding for editing apps takes minutes for 4K, so it shows how far along it is.
+      if (d.stage === 'h264') {
+        const parts = [t.convertingH264, `${Math.floor(d.progress || 0)}%`]
+        if (ctx === 'active') parts.push(formatEta(d.eta))
+        return { bar: 'progress', text: join(...parts) }
+      }
       const fmt = (d.format === 'audio' ? d.audio_format : d.video_format || 'mp4').toUpperCase()
       return {
         bar: 'working',

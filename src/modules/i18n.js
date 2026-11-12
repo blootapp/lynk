@@ -23,6 +23,7 @@ export const t = {
   readingPlaylist: n => (n ? `Reading playlist · ${n}` : 'Reading playlist…'),
   merging: 'Merging…',
   converting: fmt => `Converting to ${fmt}…`,
+  convertingH264: 'Converting to H.264…',
   finishing: 'Finishing…',
   processingShort: 'Processing',
   done: 'Done',
@@ -86,7 +87,7 @@ export const t = {
   sFormat: 'Format',
   sQuality: 'Quality',
   sPreferH264: 'Prefer H.264',
-  sPreferH264Sub: 'Plays and edits everywhere. Caps YouTube at 1080p.',
+  sPreferH264Sub: 'Faster, with nothing to convert. Caps YouTube at 1080p.',
   sFolder: 'Folder',
   sChange: 'Change',
   sAskEveryTime: 'Ask every time',
@@ -124,7 +125,7 @@ export const t = {
   menuFormat: 'Format',
   menuQuality: 'Quality',
   videoFormats: [
-    { value: 'mp4', label: 'MP4', hint: 'Plays everywhere' },
+    { value: 'mp4', label: 'MP4', hint: 'Plays and edits everywhere' },
     { value: 'mkv', label: 'MKV', hint: 'Any codec' },
   ],
   qualityOptions: [

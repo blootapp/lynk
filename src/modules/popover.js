@@ -46,6 +46,9 @@ export function openMenu(anchor, sections) {
     else if (e.key === 'Tab') closeMenu()
   }
   const onOutside = e => { if (!menu.contains(e.target) && !anchor.contains(e.target)) closeMenu() }
+  // The menu is placed once, so it would drift off its button if the panel
+  // around the button scrolled (Settings) or the window changed size.
+  const onScroll = e => { if (e.target instanceof Node && e.target.contains(anchor)) closeMenu() }
 
   menu.addEventListener('click', e => {
     const btn = e.target.closest('.menu-item')
@@ -58,13 +61,17 @@ export function openMenu(anchor, sections) {
   })
   document.addEventListener('keydown', onKey, true)
   document.addEventListener('mousedown', onOutside, true)
+  document.addEventListener('scroll', onScroll, true)
   window.addEventListener('blur', closeMenu)
+  window.addEventListener('resize', closeMenu)
   anchor.setAttribute('aria-expanded', 'true')
 
   active = { menu, anchor, cleanup: () => {
     document.removeEventListener('keydown', onKey, true)
     document.removeEventListener('mousedown', onOutside, true)
+    document.removeEventListener('scroll', onScroll, true)
     window.removeEventListener('blur', closeMenu)
+    window.removeEventListener('resize', closeMenu)
     anchor.setAttribute('aria-expanded', 'false')
   } }
   ;(buttons.find(b => b.getAttribute('aria-checked') === 'true') || buttons[0])?.focus({ preventScroll: true })

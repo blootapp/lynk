@@ -26,9 +26,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 
-use crate::db;
+
+use crate::{db, net};
 use crate::process::{self, Killer};
 
 const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
@@ -196,7 +196,7 @@ impl YouTube {
             format!("{MIRROR}/deno-{DENO_VERSION}-{}.zip", asset.target),
             format!("https://dl.deno.land/release/v{DENO_VERSION}/deno-{}.zip", asset.target),
         ];
-        let result = fetch_verified(&urls, asset.sha256, &zip_path, cancel).and_then(|_| {
+        let result = net::fetch_verified(&urls, asset.sha256, &zip_path, cancel).and_then(|_| {
             let tmp = self.bin.join(format!("deno{EXE}.part"));
             extract_deno(&zip_path, &tmp)?;
             finish_executable(&tmp, &self.deno_path())?;
@@ -252,7 +252,7 @@ impl YouTube {
             std::fs::create_dir_all(&self.bin).map_err(|e| e.to_string())?;
             let gz = self.bin.join("bgutil-pot.gz.part");
             let url = format!("{MIRROR}/qooti-pot-{}.gz", asset.target);
-            let result = fetch_verified(&[url], asset.sha256, &gz, cancel).and_then(|_| {
+            let result = net::fetch_verified(&[url], asset.sha256, &gz, cancel).and_then(|_| {
                 let tmp = self.bin.join(format!("bgutil-pot{EXE}.part"));
                 gunzip(&gz, &tmp)?;
                 finish_executable(&tmp, &path)?;
@@ -375,55 +375,6 @@ fn provider_up() -> bool {
     }
     let line = String::from_utf8_lossy(&head[..n]);
     line.starts_with("HTTP/1.") && line.get(9..12) == Some("200")
-}
-
-/// Downloads the first URL that serves a file with the expected SHA-256.
-fn fetch_verified(urls: &[String], sha256: &str, dest: &Path, cancel: &AtomicBool) -> Result<(), String> {
-    let mut last = String::from("no source");
-    for url in urls {
-        match download(url, dest, cancel) {
-            Ok(hash) if hash == sha256 => return Ok(()),
-            Ok(_) => last = format!("{url}: checksum mismatch"),
-            Err(e) => last = format!("{url}: {e}"),
-        }
-        let _ = std::fs::remove_file(dest);
-        if cancel.load(Ordering::SeqCst) {
-            return Err("cancelled".into());
-        }
-    }
-    Err(last)
-}
-
-/// Streams `url` into `dest`; returns the file's SHA-256 (hex).
-fn download(url: &str, dest: &Path, cancel: &AtomicBool) -> Result<String, String> {
-    // reqwest is built on rustls without a default crypto provider (the
-    // updater plugin does the same).
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-    tauri::async_runtime::block_on(async {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("lynk/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let mut res = client.get(url).send().await.map_err(|e| e.to_string())?;
-        if !res.status().is_success() {
-            return Err(format!("HTTP {}", res.status().as_u16()));
-        }
-        let mut file = File::create(dest).map_err(|e| e.to_string())?;
-        let mut hasher = Sha256::new();
-        while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
-            if cancel.load(Ordering::SeqCst) {
-                return Err("cancelled".into());
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk).map_err(|e| e.to_string())?;
-        }
-        file.sync_all().map_err(|e| e.to_string())?;
-        Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
-    })
 }
 
 fn extract_deno(zip_path: &Path, dest: &Path) -> Result<(), String> {

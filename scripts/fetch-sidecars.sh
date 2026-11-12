@@ -15,7 +15,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT"
 
-YTDLP_VERSION="2026.08.19"
+YTDLP_VERSION="2026.10.26"
 YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION"
 
 sha256() {
@@ -38,7 +38,7 @@ fetch() { # url dest expected-sha256
 case "$TARGET" in
   aarch64-apple-darwin|x86_64-apple-darwin)
     fetch "$YTDLP_URL/yt-dlp_macos" "$OUT/yt-dlp-$TARGET" \
-      0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202
+      0f922c15ccc0b83eefa1c8bc9104e434318c4bf16e408e1ee93b7745a6efe0aa
     if [ "$TARGET" = aarch64-apple-darwin ]; then
       fetch "https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip" "$TMP/ffmpeg.zip" \
         c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924
@@ -52,8 +52,15 @@ case "$TARGET" in
     xattr -c "$OUT/yt-dlp-$TARGET" "$OUT/ffmpeg-$TARGET" 2>/dev/null || true
     ;;
   x86_64-pc-windows-msvc)
-    fetch "$YTDLP_URL/yt-dlp.exe" "$OUT/yt-dlp-$TARGET.exe" \
-      66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a
+    # yt-dlp's unpacked build (the exe plus _internal/), bundled as a resource
+    # folder by tauri.windows.conf.json: the single-file yt-dlp.exe unpacks
+    # itself on every run, which is slow on many PCs (see engine.rs).
+    fetch "$YTDLP_URL/yt-dlp_win.zip" "$TMP/yt-dlp_win.zip" \
+      fd51b212cf8380c7a52ee08c0d6be7f3c59b2f2c832eaf7b45acfae6eab57419
+    rm -rf "$ROOT/src-tauri/yt-dlp"
+    mkdir -p "$ROOT/src-tauri/yt-dlp"
+    unzip -q -o "$TMP/yt-dlp_win.zip" -d "$ROOT/src-tauri/yt-dlp"
+    test -f "$ROOT/src-tauri/yt-dlp/yt-dlp.exe" -a -d "$ROOT/src-tauri/yt-dlp/_internal"
     fetch "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip" "$TMP/ffmpeg.zip" \
       60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
     unzip -q -o "$TMP/ffmpeg.zip" -d "$TMP/ffmpeg"
@@ -67,3 +74,6 @@ esac
 
 echo "✓ sidecars for $TARGET:"
 ls -lh "$OUT" | grep -- "$TARGET"
+if [ -d "$ROOT/src-tauri/yt-dlp" ] && [ "$TARGET" = x86_64-pc-windows-msvc ]; then
+  echo "✓ yt-dlp (unpacked): $(find "$ROOT/src-tauri/yt-dlp" -type f | wc -l | tr -d ' ') files"
+fi
