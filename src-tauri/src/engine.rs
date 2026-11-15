@@ -26,6 +26,7 @@ use crate::parse::version_newer;
 use crate::process;
 
 const CHECK_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+const RECHECK_MS: i64 = 60 * 60 * 1000;
 const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -179,18 +180,29 @@ impl Engine {
         }
     }
 
-    /// The daily update check. Runs at launch and again while Lynk stays
+    /// The daily update check. Runs at launch and again while lynk stays
     /// open — it lives in the tray for days, and YouTube breaks old yt-dlp
-    /// versions within weeks.
+    /// versions within weeks. Always on: up to 0.1.4 Settings could switch it
+    /// off ("Update automatically"), which only ever made downloads fail.
     pub fn update_if_due(&self) {
-        let auto = self.db.pref("ytdlp_auto_update").as_deref() != Some("false");
         let due = self
             .status()
             .last_check
             .is_none_or(|t| now_ms() - t > CHECK_INTERVAL_MS);
-        if auto && due {
+        if due {
             self.update();
         }
+    }
+
+    /// After a failure that a newer yt-dlp often fixes: checks now instead of
+    /// at the next daily check, at most once an hour. Doesn't block.
+    pub fn update_soon(self: &Arc<Self>) {
+        let recent = self.status().last_check.is_some_and(|t| now_ms() - t < RECHECK_MS);
+        if recent || self.is_updating() {
+            return;
+        }
+        let engine = Arc::clone(self);
+        std::thread::spawn(move || engine.update());
     }
 
     fn copy_bundled(&self, bundled: &Path) {

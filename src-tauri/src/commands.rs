@@ -23,10 +23,7 @@ const PREF_KEYS: &[&str] = &[
     "audio_format",
     "video_format",
     "ask_save_path",
-    "prefer_h264",
-    "max_concurrent",
     "notifications",
-    "ytdlp_auto_update",
     "cookies_browser",
     "save_path",
 ];
@@ -70,20 +67,17 @@ pub fn get_preferences(db: DbState) -> Result<HashMap<String, String>, String> {
 }
 
 #[tauri::command]
-pub fn set_preference(
-    key: String,
-    value: String,
-    db: DbState,
-    manager: ManagerState,
-) -> Result<(), String> {
+pub fn set_preference(key: String, value: String, db: DbState) -> Result<(), String> {
     if !PREF_KEYS.contains(&key.as_str()) {
         return Err(format!("Unknown preference: {key}"));
     }
-    db.set_pref(&key, &value).map_err(|e| e.to_string())?;
-    if key == "max_concurrent" {
-        manager.set_max_concurrent(value.parse().unwrap_or(3));
-    }
-    Ok(())
+    db.set_pref(&key, &value).map_err(|e| e.to_string())
+}
+
+/// For "Use sign-in from": only browsers that are on this computer.
+#[tauri::command]
+pub fn installed_browsers() -> Vec<&'static str> {
+    system::installed_browsers()
 }
 
 // ── Files ────────────────────────────────────────────────────────────────────

@@ -65,3 +65,51 @@ mod imp {
 }
 
 pub use imp::{get as autostart_enabled, set as set_autostart, sync_path as sync_autostart_path};
+
+// ── Browsers ─────────────────────────────────────────────────────────────────
+
+/// Browsers whose sign-in yt-dlp can use (`--cookies-from-browser`) that are
+/// installed here, in the order lynk lists them. "Installed" means the
+/// profile folder yt-dlp reads exists; nothing inside is opened until a
+/// download uses that browser's sign-in.
+pub fn installed_browsers() -> Vec<&'static str> {
+    use std::path::PathBuf;
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    #[cfg(windows)]
+    let places: Vec<(&'static str, Option<PathBuf>)> = {
+        let local = env("LOCALAPPDATA");
+        let roaming = env("APPDATA");
+        let l = |p: &str| local.as_ref().map(|d| d.join(p));
+        let r = |p: &str| roaming.as_ref().map(|d| d.join(p));
+        vec![
+            ("firefox", r(r"Mozilla\Firefox\Profiles")),
+            ("chrome", l(r"Google\Chrome\User Data")),
+            ("edge", l(r"Microsoft\Edge\User Data")),
+            ("brave", l(r"BraveSoftware\Brave-Browser\User Data")),
+            ("opera", r(r"Opera Software\Opera Stable")),
+            ("vivaldi", l(r"Vivaldi\User Data")),
+            ("chromium", l(r"Chromium\User Data")),
+        ]
+    };
+    #[cfg(not(windows))]
+    let places: Vec<(&'static str, Option<PathBuf>)> = {
+        let home = env("HOME");
+        let s = |p: &str| home.as_ref().map(|h| h.join("Library/Application Support").join(p));
+        vec![
+            // Every Mac has Safari.
+            ("safari", home.clone()),
+            ("firefox", s("Firefox/Profiles")),
+            ("chrome", s("Google/Chrome")),
+            ("edge", s("Microsoft Edge")),
+            ("brave", s("BraveSoftware/Brave-Browser")),
+            ("opera", s("com.operasoftware.Opera")),
+            ("vivaldi", s("Vivaldi")),
+            ("chromium", s("Chromium")),
+        ]
+    };
+    places
+        .into_iter()
+        .filter(|(_, dir)| dir.as_ref().is_some_and(|d| d.is_dir()))
+        .map(|(browser, _)| browser)
+        .collect()
+}

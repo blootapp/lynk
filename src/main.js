@@ -11,6 +11,7 @@ import * as downloads from './modules/downloads.js'
 import * as activeList from './modules/active-list.js'
 import * as history from './modules/history.js'
 import * as settings from './modules/settings.js'
+import * as signin from './modules/signin.js'
 import * as updater from './modules/updater.js'
 import { confirm } from './modules/dialog.js'
 import { t } from './modules/i18n.js'
@@ -44,6 +45,7 @@ async function main() {
   }
 
   await prefs.load()
+  await signin.load()
 
   panels.init()
   composer.init()

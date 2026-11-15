@@ -10,7 +10,7 @@ mockWindows('main')
 
 const prefs = {
   default_quality: '1080p', default_format: 'video', audio_format: 'mp3', video_format: 'mp4', ask_save_path: 'false',
-  prefer_h264: 'true', max_concurrent: '3', notifications: 'true', ytdlp_auto_update: 'true',
+  notifications: 'true',
   cookies_browser: '', save_path: 'C:\\Users\\you\\Downloads\\Lynk', autostart_initialized: 'true',
 }
 const now = Date.now()
@@ -20,7 +20,7 @@ const base = { quality: '1080p', audio_format: 'mp3', video_format: 'mp4', prefe
 const db = new Map([
   { id: 'h1', url: 'https://www.youtube.com/watch?v=aqz-KE-bpKQ', title: 'Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film', thumbnail: yt('aqz-KE-bpKQ'), duration: 635, site: 'Youtube', format: 'video', ext: 'mp4', status: 'done', size_bytes: 248_512_000, created_at: now - 2 * H, finished_at: now - 2 * H + 90e3 },
   { id: 'h2', url: 'https://soundcloud.com/x/y', title: 'Lofi beats to study to — Vol. 3', site: 'Soundcloud', format: 'audio', ext: 'mp3', status: 'done', size_bytes: 8_734_000, duration: 214, created_at: now - 5 * H, finished_at: now - 5 * H + 20e3 },
-  { id: 'h3', url: 'https://www.instagram.com/reel/abc', title: null, site: 'Instagram', format: 'video', ext: 'mp4', status: 'error', progress: 0, error_msg: 'This content requires signing in. Pick your browser under Settings › Sign-in cookies.', error_detail: 'Requested content is not available, rate-limit reached or login required', created_at: now - 26 * H, finished_at: now - 26 * H },
+  { id: 'h3', url: 'https://www.instagram.com/reel/abc', title: null, site: 'Instagram', format: 'video', ext: 'mp4', status: 'error', progress: 0, error_msg: 'This video needs you to be signed in.', error_detail: 'Requested content is not available, rate-limit reached or login required', created_at: now - 26 * H, finished_at: now - 26 * H },
   { id: 'h4', url: 'https://www.youtube.com/watch?v=eRsGyueVLvQ', title: 'Sintel — Open Movie by Blender Foundation', thumbnail: yt('eRsGyueVLvQ'), duration: 888, site: 'Youtube', format: 'video', ext: 'mp4', status: 'done', size_bytes: 412_300_000, file_missing: true, created_at: now - 4 * 24 * H, finished_at: now - 4 * 24 * H },
 ].map(d => [d.id, { ...base, ...d }]))
 const playlists = new Map()
@@ -37,7 +37,7 @@ const push = d => emit('download:update', { ...d })
 const uid = () => Math.random().toString(36).slice(2, 10)
 
 function pump() {
-  while (running.size < Number(prefs.max_concurrent) && queue.length) {
+  while (running.size < 3 && queue.length) {
     const id = queue.shift()
     running.add(id)
     simulate(id).finally(() => { running.delete(id); pump() })
@@ -103,7 +103,8 @@ mockIPC(async (cmd, args = {}) => {
   switch (cmd) {
     case 'get_app_info': return { platform: 'windows', version: '0.1.0', app_id: 'lynk' }
     case 'get_preferences': return { ...prefs }
-    case 'set_preference': prefs[args.key] = args.value; if (args.key === 'max_concurrent') pump(); return null
+    case 'set_preference': prefs[args.key] = args.value; return null
+    case 'installed_browsers': return ['firefox', 'chrome', 'edge']
     case 'get_default_save_path': return 'C:\\Users\\you\\Downloads\\Lynk'
     case 'read_clipboard': return clipboard
     case 'list_downloads': return [...db.values()].sort((a, b) => b.created_at - a.created_at)

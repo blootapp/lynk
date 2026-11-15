@@ -1,20 +1,25 @@
+// Settings holds only what a person would change, in plain words: few
+// settings with good defaults (as Apple's HIG puts it). Format and quality
+// are picked next to the link field, and lynk decides the rest itself: the
+// video codec (parse::video_sort), how many downloads run at once, and
+// keeping its downloader up to date. Up to 0.1.4 those were settings too.
 import * as api from './tauri-api.js'
 import * as prefs from './prefs.js'
 import { store } from './store.js'
 import { EVENTS } from './events.js'
 import { t } from './i18n.js'
-import { esc, syncSegmented, setChecked } from './dom.js'
+import { esc } from './dom.js'
 import { icon } from './icons.js'
-import { relativeTime } from './format.js'
 import { confirm } from './dialog.js'
 import { openMenu, closeMenu } from './popover.js'
+import { browserOptions } from './signin.js'
 
 let body
 /** The dropdowns, by id: the pref each one sets and the choices it offers. */
 let selects = {}
 let platform = 'windows'
 let version = ''
-let engine = { version: null, updating: false, last_check: null, error: null, updated_to: null }
+let engineVersion = null
 let autostart = false
 let appUpdate = { state: 'idle' }
 
@@ -25,17 +30,11 @@ export function init(appInfo) {
   render()
 
   store.on(EVENTS.PREF_UPDATED, ({ key, value }) => syncControl(key, value))
-  store.on(EVENTS.ENGINE_STATUS, s => {
-    const justUpdated = s.updated_to && s.updated_to !== engine.updated_to
-    engine = s
-    renderEngine()
-    if (justUpdated) store.emit(EVENTS.TOAST, { message: t.engineUpdatedToast(s.updated_to), kind: 'success' })
-  })
+  // The downloader updates itself; its version shows only on hover, for support.
+  store.on(EVENTS.ENGINE_STATUS, s => { engineVersion = s.version; renderVersion() })
   store.on(EVENTS.UPDATE_STATUS, s => { appUpdate = s; renderAppUpdate() })
   store.on(EVENTS.PANEL_OPENED, async name => {
     if (name !== 'settings') return
-    renderEngine()
-    requestAnimationFrame(() => body.querySelectorAll('.segmented').forEach(s => syncSegmented(s, false)))
     // The registry can change outside the app.
     if (platform === 'windows') {
       autostart = await api.getAutostart().catch(() => autostart)
@@ -66,42 +65,18 @@ const toggle = (id, checked) => `
     <span class="switch-track"></span>
   </span>`
 
-const segmented = (id, options, value) => `
-  <div class="segmented small" id="${id}" role="radiogroup">
-    <span class="seg-indicator" aria-hidden="true"></span>
-    ${options.map(o => `<button class="seg-btn" role="radio" data-value="${esc(o.value)}" aria-checked="${o.value === value}">${esc(o.label)}</button>`).join('')}
-  </div>`
-
-const text = (label, sub, extra = '') => `
+const text = (label, sub) => `
   <div class="s-text">
     <div class="s-label">${esc(label)}</div>
-    ${sub ? `<div class="s-sub"${extra}>${esc(sub)}</div>` : ''}
+    ${sub ? `<div class="s-sub">${esc(sub)}</div>` : ''}
   </div>`
 
 function render() {
-  const cookieOptions = platform === 'macos'
-    ? [...t.cookieBrowsers, { value: 'safari', label: 'Safari' }]
-    : t.cookieBrowsers
-  const short = items => items.map(({ value, label }) => ({ value, label }))
-  const parallel = ['1', '2', '3', '4', '5'].map(v => ({ value: v, label: v }))
   selects = {
-    'pref-quality': { key: 'default_quality', fallback: 'best', label: t.sQuality, options: t.qualityOptions },
-    'pref-cookies': { key: 'cookies_browser', fallback: '', label: t.sCookies, options: cookieOptions },
+    'pref-cookies': { key: 'cookies_browser', fallback: '', label: t.sSignInFrom, options: browserOptions() },
   }
 
   body.innerHTML = `
-    <section class="s-section">
-      <div class="s-title">${t.sVideo}</div>
-      <div class="s-row">${text(t.sFormat)}${segmented('pref-vformat', short(t.videoFormats), prefs.get('video_format', 'mp4'))}</div>
-      <div class="s-row">${text(t.sQuality)}${select('pref-quality')}</div>
-      <label class="s-row" for="pref-h264">${text(t.sPreferH264, t.sPreferH264Sub)}${toggle('pref-h264', prefs.get('prefer_h264', 'true') !== 'false')}</label>
-    </section>
-
-    <section class="s-section">
-      <div class="s-title">${t.sAudio}</div>
-      <div class="s-row">${text(t.sFormat)}${segmented('pref-audio', short(t.audioOptions), prefs.get('audio_format', 'mp3'))}</div>
-    </section>
-
     <section class="s-section">
       <div class="s-title">${t.sSaving}</div>
       <div class="s-row">
@@ -112,12 +87,11 @@ function render() {
         <button class="text-btn" id="btn-change-folder">${t.sChange}</button>
       </div>
       <label class="s-row" for="pref-ask">${text(t.sAskEveryTime)}${toggle('pref-ask', prefs.getBool('ask_save_path'))}</label>
-      <div class="s-row">${text(t.sParallel)}${segmented('pref-parallel', parallel, prefs.get('max_concurrent', '3'))}</div>
     </section>
 
     <section class="s-section">
       <div class="s-title">${t.sSignIn}</div>
-      <div class="s-row">${text(t.sCookies, t.sCookiesSub)}${select('pref-cookies')}</div>
+      <div class="s-row">${text(t.sSignInFrom, t.sSignInSub)}${select('pref-cookies')}</div>
     </section>
 
     <section class="s-section">
@@ -129,22 +103,10 @@ function render() {
     </section>
 
     <section class="s-section">
-      <div class="s-title">${t.sEngine}</div>
+      <div class="s-title">${t.sUpdates}</div>
       <div class="s-row">
         <div class="s-text">
-          <div class="s-label" id="engine-version"></div>
-          <div class="s-sub" id="engine-status"></div>
-        </div>
-        <button class="text-btn" id="btn-engine-update"></button>
-      </div>
-      <label class="s-row" for="pref-autoupdate">${text(t.sAutoUpdate)}${toggle('pref-autoupdate', prefs.get('ytdlp_auto_update', 'true') !== 'false')}</label>
-    </section>
-
-    <section class="s-section">
-      <div class="s-title">${t.sApp}</div>
-      <div class="s-row">
-        <div class="s-text">
-          <div class="s-label">${esc(t.sAppVersion(version))}</div>
+          <div class="s-label" id="app-version">${esc(t.sAppVersion(version))}</div>
           <div class="s-sub" id="app-update-status"></div>
         </div>
         <button class="text-btn" id="btn-app-update"></button>
@@ -158,7 +120,7 @@ function render() {
   `
   for (const [id, s] of Object.entries(selects)) setSelect(id, prefs.get(s.key, s.fallback))
   renderSavePath()
-  renderEngine()
+  renderVersion()
   renderAppUpdate()
   wire()
 }
@@ -183,18 +145,23 @@ function renderAppUpdate() {
   if (!s) return
   const u = appUpdate
   s.className = 's-sub'
+  // Always one line of text, so the row never changes height.
   s.textContent = u.state === 'checking' ? t.updChecking
     : u.state === 'downloading' ? t.updDownloading(u.version)
     : u.state === 'ready' ? t.updReady(u.version)
     : u.state === 'current' ? t.updCurrent
-    : u.state === 'error' ? u.error || ''
-    : ''
-  if (u.state === 'error') s.classList.add('error')
+    : u.state === 'error' && u.error ? u.error
+    : t.updAuto
+  if (u.state === 'error' && u.error) s.classList.add('error')
   if (u.state === 'ready') s.classList.add('ok')
-  s.hidden = !s.textContent
   b.hidden = u.state === 'checking' || u.state === 'downloading'
   b.textContent = u.state === 'ready' ? t.updRestart : t.updCheck
   b.dataset.mode = u.state === 'ready' ? 'install' : 'check'
+}
+
+function renderVersion() {
+  const v = body.querySelector('#app-version')
+  if (v) v.title = engineVersion ? t.sDownloaderVersion(engineVersion) : ''
 }
 
 function renderSavePath() {
@@ -205,38 +172,13 @@ function renderSavePath() {
   el.title = p
 }
 
-function renderEngine() {
-  const v = body.querySelector('#engine-version')
-  const s = body.querySelector('#engine-status')
-  const b = body.querySelector('#btn-engine-update')
-  if (!v) return
-  v.textContent = t.sEngineVersion(engine.version)
-  s.className = 's-sub'
-  if (engine.updating) {
-    s.textContent = t.sEngineChecking
-  } else if (engine.error) {
-    s.textContent = engine.error
-    s.classList.add('error')
-  } else if (engine.updated_to) {
-    s.textContent = t.sEngineUpdated(engine.updated_to)
-    s.classList.add('ok')
-  } else {
-    s.textContent = engine.last_check ? t.sEngineChecked(relativeTime(engine.last_check)) : t.sEngineNever
-  }
-  b.disabled = engine.updating
-  b.textContent = engine.updating ? '' : t.sCheck
-  b.hidden = engine.updating
-}
-
 // ── Behaviour ────────────────────────────────────────────────────────────────
 
 function wire() {
   const on = (sel, ev, fn) => body.querySelector(sel)?.addEventListener(ev, fn)
 
-  on('#pref-h264', 'change', e => prefs.set('prefer_h264', e.target.checked))
   on('#pref-ask', 'change', e => prefs.set('ask_save_path', e.target.checked))
   on('#pref-notify', 'change', e => prefs.set('notifications', e.target.checked))
-  on('#pref-autoupdate', 'change', e => prefs.set('ytdlp_auto_update', e.target.checked))
 
   for (const [id, s] of Object.entries(selects)) {
     const btn = body.querySelector(`#${id}`)
@@ -256,13 +198,6 @@ function wire() {
     })
   }
 
-  for (const [id, key] of [['#pref-vformat', 'video_format'], ['#pref-audio', 'audio_format'], ['#pref-parallel', 'max_concurrent']]) {
-    on(id, 'click', e => {
-      const btn = e.target.closest('[role="radio"]')
-      if (btn) prefs.set(key, btn.dataset.value)
-    })
-  }
-
   on('#pref-autostart', 'change', async e => {
     const want = e.target.checked
     try {
@@ -279,14 +214,11 @@ function wire() {
     if (chosen) prefs.set('save_path', chosen)
   })
 
-  on('#btn-engine-update', 'click', () => {
-    engine = { ...engine, updating: true, error: null, updated_to: null }
-    renderEngine()
-    api.engineUpdate()
-  })
-
   on('#btn-app-update', 'click', e => {
-    store.emit(e.currentTarget.dataset.mode === 'install' ? EVENTS.UPDATE_INSTALL : EVENTS.UPDATE_CHECK)
+    if (e.currentTarget.dataset.mode === 'install') return store.emit(EVENTS.UPDATE_INSTALL)
+    store.emit(EVENTS.UPDATE_CHECK)
+    // One button for both lynk and the downloader it runs.
+    api.engineUpdate().catch(() => {})
   })
 
   on('#btn-settings-clear', 'click', async () => {
@@ -300,22 +232,13 @@ function wire() {
   })
 }
 
-/** Keeps controls in sync when a pref changes elsewhere (e.g. the format menu). */
+/** Keeps controls in sync when a pref changes elsewhere (e.g. a row's sign-in button). */
 function syncControl(key, value) {
   const q = sel => body.querySelector(sel)
-  const segs = { video_format: '#pref-vformat', audio_format: '#pref-audio', max_concurrent: '#pref-parallel' }
-  if (segs[key]) {
-    const seg = q(segs[key])
-    if (seg) { setChecked(seg, value); syncSegmented(seg) }
-    return
-  }
   switch (key) {
-    case 'default_quality': setSelect('pref-quality', value); break
     case 'cookies_browser': setSelect('pref-cookies', value); break
-    case 'prefer_h264': if (q('#pref-h264')) q('#pref-h264').checked = value !== 'false'; break
     case 'ask_save_path': if (q('#pref-ask')) q('#pref-ask').checked = value === 'true'; break
     case 'notifications': if (q('#pref-notify')) q('#pref-notify').checked = value !== 'false'; break
-    case 'ytdlp_auto_update': if (q('#pref-autoupdate')) q('#pref-autoupdate').checked = value !== 'false'; break
     case 'save_path': renderSavePath(); break
   }
 }

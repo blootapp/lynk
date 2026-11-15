@@ -7,6 +7,7 @@ import {
   createRow, updateRow, createPromptRow, updatePromptRow, createGroupRow, updateGroupRow,
   isActive, isFinished,
 } from './card.js'
+import { openSignInMenu } from './signin.js'
 
 const records = new Map()
 const session = new Set()   // record ids shown here
@@ -165,6 +166,7 @@ function onClick(e) {
   const action = btn.dataset.action
   const id = btn.closest('[data-id]')?.dataset.id
   if (action === 'dismiss') return dismiss([id], row)
+  if (action === 'sign-in') return openSignInMenu(btn, id)
   if (action === 'dismiss-group') {
     return dismiss([...session].filter(sid => records.get(sid)?.group_id === groupId), row)
   }

@@ -18,7 +18,6 @@ pub struct ArgSpec<'a> {
     pub quality: &'a str,
     pub audio_format: &'a str,
     pub video_format: &'a str,
-    pub prefer_h264: bool,
     pub dir: &'a str,
     pub name_prefix: Option<&'a str>,
     pub ffmpeg: Option<&'a Path>,
@@ -96,7 +95,7 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
         );
     } else {
         let mkv = s.video_format == "mkv";
-        a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), video_sort(s.quality, s.prefer_h264, mkv, youtube)]);
+        a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), video_sort(s.quality, mkv, youtube)]);
         // MKV holds any codec, so everything can be remuxed into it losslessly.
         let (container, remux) = if mkv { ("mkv", "mkv") } else { ("mp4", "mkv>mp4/webm>mp4/mov>mp4") };
         a.extend(
@@ -117,19 +116,22 @@ pub fn build_args(s: &ArgSpec) -> Vec<String> {
 /// GPU encoder takes.
 const MP4_MAX_HEIGHT: u32 = 2160;
 
-/// Format-sort string. An explicit resolution wins over the codec preference
-/// (picking "4K" should give 4K even though YouTube has no 4K H.264).
+/// Format-sort string. lynk decides this itself; there is no codec setting.
 ///
 /// MP4 is the format that opens everywhere, editing apps included, so its
 /// video ends up H.264: Premiere Pro and After Effects import VP9 or AV1 as
-/// sound with no picture. Ranked right after the resolution, H.264 wins
-/// whenever the site has it at that size. When it doesn't (YouTube has no
-/// H.264 above 1080p), the file is converted after the download, so VP9 comes
-/// before AV1 (ffmpeg decodes it far faster) and SDR before HDR, which an
-/// 8-bit H.264 copy can't show. "Prefer H.264" keeps the site's own H.264
-/// stream, so there's nothing to convert: on YouTube that caps "best" at
-/// 1080p; elsewhere the codec ranks before the resolution. MKV takes the
-/// streams as served.
+/// sound with no picture. "Best" takes the site's own H.264, so the file is
+/// ready at once: on YouTube, which has no H.264 above 1080p, that means
+/// 1080p; elsewhere H.264 ranks before a higher resolution. A quality the
+/// person picks ranks first ("4K" gives 4K) with H.264 right after it, and
+/// what isn't H.264 is converted after the download (convert.rs): VP9 comes
+/// before AV1 there (ffmpeg decodes it far faster) and SDR before HDR, which
+/// an 8-bit H.264 copy can't show. Up to 0.1.4 a "Prefer H.264" switch chose
+/// between this and resolution first; "Best" with it off equals "4K", which
+/// is what db.rs migrates those people to.
+///
+/// MKV keeps the original: the highest resolution in any codec, nothing to
+/// convert.
 ///
 /// The picture decides before any audio field. Ranked ahead of resolution,
 /// the AAC preference made YouTube's one combined stream (360p, sometimes
@@ -138,21 +140,17 @@ const MP4_MAX_HEIGHT: u32 = 2160;
 /// beats a combined one. The audio fields then pick the audio stream: the
 /// original language, and for MP4 AAC and MP4/M4A sources; MKV takes the
 /// best audio as-is.
-pub fn video_sort(quality: &str, prefer_h264: bool, mkv: bool, youtube: bool) -> String {
+pub fn video_sort(quality: &str, mkv: bool, youtube: bool) -> String {
     let mut sort: Vec<String> = Vec::new();
-    match quality_height(quality) {
-        Some(h) => sort.push(format!("res:{h}")),
-        None if prefer_h264 && youtube => sort.push("res:1080".into()),
-        None if mkv || prefer_h264 => {}
-        None => sort.push(format!("res:{MP4_MAX_HEIGHT}")),
-    }
-    if prefer_h264 || !mkv {
-        sort.push("vcodec:h264".into());
-    }
-    if !sort.iter().any(|f| f.starts_with("res")) {
-        sort.push(if mkv { "res".into() } else { format!("res:{MP4_MAX_HEIGHT}") });
-    }
-    if !mkv {
+    let height = quality_height(quality);
+    if mkv {
+        sort.push(height.map_or_else(|| "res".into(), |h| format!("res:{h}")));
+    } else {
+        match height {
+            Some(h) => sort.extend([format!("res:{h}"), "vcodec:h264".into()]),
+            None if youtube => sort.extend(["res:1080".into(), "vcodec:h264".into()]),
+            None => sort.extend(["vcodec:h264".into(), format!("res:{MP4_MAX_HEIGHT}")]),
+        }
         sort.push("+hdr".into());
     }
     sort.extend(["fps", "proto", "+hasaud", "lang"].map(String::from));
@@ -457,21 +455,31 @@ pub fn clean_error(raw: &str) -> String {
     out
 }
 
+/// Failures a newer yt-dlp usually fixes: the site refusing the download
+/// (YouTube's 403s) or yt-dlp no longer making sense of the page.
+pub fn engine_may_be_outdated(raw: &str) -> bool {
+    let l = raw.to_lowercase();
+    ["http error 403", "unable to extract", "nsig", "signature extraction"].iter().any(|n| l.contains(n))
+}
+
 /// Maps a yt-dlp error to something a person can act on.
 pub fn humanize_error(raw: &str) -> String {
     let l = raw.to_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| l.contains(n));
 
+    // "Sign in" in these messages means the sign-in button the row shows for
+    // them: it uses a browser's sign-in (signin.js lists the same causes).
+    // Two lines fit next to that row's three buttons, so they stay short.
     if has(&["not a bot", "confirm you’re not", "confirm you're not"]) {
-        return "YouTube asked to verify you're not a bot. Wait a bit and retry, or pick your browser under Settings › Sign-in cookies.".into();
+        return "YouTube is checking for bots. Retry later or sign in.".into();
     }
     // Chrome and other Chromium browsers seal their cookies to themselves on
     // Windows; closing the browser doesn't help.
     if has(&["failed to decrypt with dpapi", "app-bound", "app bound"]) {
-        return "This browser locks its cookies on Windows. Choose Firefox under Settings › Sign-in cookies.".into();
+        return "This browser locks its sign-in. Pick Firefox instead.".into();
     }
     if has(&["could not copy chrome cookie", "could not copy", "failed to decrypt", "cookie database", "could not find"]) && l.contains("cookie") {
-        return "Couldn't read cookies from your browser. Close the browser and retry, or choose another browser in Settings.".into();
+        return "Couldn't read the sign-in. Close the browser and retry.".into();
     }
     if has(&["unsupported url"]) {
         return "This link isn't supported.".into();
@@ -483,13 +491,13 @@ pub fn humanize_error(raw: &str) -> String {
         return "That quality isn't available for this video. Try a different quality.".into();
     }
     if has(&["confirm your age", "age-restricted", "age restricted", "inappropriate for some users"]) {
-        return "This video is age-restricted. Pick your browser under Settings › Sign-in cookies to use your account.".into();
+        return "This video is age-restricted. Sign in to get it.".into();
     }
     if has(&["private video", "video is private", "this video is private"]) {
-        return "This video is private.".into();
+        return "This video is private. Sign in if you have access.".into();
     }
     if has(&["members-only", "members only", "join this channel"]) {
-        return "This video is for channel members only.".into();
+        return "Members-only video. Sign in if you're a member.".into();
     }
     if has(&["premieres in", "live event will begin", "this live event", "is upcoming"]) {
         return "This video hasn't started yet.".into();
@@ -503,8 +511,9 @@ pub fn humanize_error(raw: &str) -> String {
     if has(&["http error 429", "too many requests"]) {
         return "The site is rate-limiting requests. Wait a few minutes and retry.".into();
     }
+    // lynk also checks for a newer yt-dlp right away (engine_may_be_outdated).
     if has(&["http error 403", "forbidden"]) {
-        return "The site refused the download (403). Updating the download engine in Settings usually fixes this.".into();
+        return "The site refused the download. Retry in a few minutes.".into();
     }
     if has(&["http error 404", "not found (404)"]) {
         return "Not found (404). The link may be broken or the video removed.".into();
@@ -513,16 +522,16 @@ pub fn humanize_error(raw: &str) -> String {
         return "This video is unavailable.".into();
     }
     if has(&["login required", "logged-in", "log in", "sign in", "--username", "requires authentication", "account credentials"]) {
-        return "This content requires signing in. Pick your browser under Settings › Sign-in cookies.".into();
+        return "This video needs you to be signed in.".into();
     }
     if has(&["no space left", "errno 28", "not enough space", "disk full"]) {
         return "Not enough disk space.".into();
     }
     if has(&["permission denied", "errno 13", "access is denied"]) {
-        return "Lynk can't write to the save folder. Choose another folder in Settings.".into();
+        return "lynk can't save to this folder. Choose another one in Settings.".into();
     }
     if has(&["ffmpeg not found", "ffmpeg is not installed", "ffprobe and ffmpeg not found"]) {
-        return "ffmpeg is missing, so the file couldn't be processed. Reinstall Lynk.".into();
+        return "Part of lynk is missing, so the file couldn't be finished. Reinstall lynk.".into();
     }
     if has(&[
         "getaddrinfo", "name or service not known", "nodename nor servname", "timed out",
@@ -662,8 +671,12 @@ mod tests {
     #[test]
     fn humanizes_common_errors() {
         let bot = "[youtube] jNQXAC9IVRw: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.";
-        assert!(humanize_error(bot).contains("not a bot"));
-        assert!(humanize_error("unable to download video data: HTTP Error 403: Forbidden").contains("403"));
+        assert!(humanize_error(bot).contains("checking for bots"));
+        assert!(humanize_error("unable to download video data: HTTP Error 403: Forbidden").contains("refused"));
+        assert!(humanize_error("[youtube] x: Sign in to confirm your age").ends_with("Sign in to get it."));
+        assert!(engine_may_be_outdated("unable to download video data: HTTP Error 403: Forbidden"));
+        assert!(engine_may_be_outdated("[youtube] x: Unable to extract nsig function code"));
+        assert!(!engine_may_be_outdated("[youtube] x: Private video. Sign in if you've been granted access"));
         assert!(humanize_error("[generic] Unsupported URL: https://x.y").contains("isn't supported"));
         assert!(humanize_error("Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info").contains("Firefox"));
         assert!(humanize_error("Could not copy Chrome cookie database. See  https://github.com/yt-dlp/yt-dlp/issues/7271  for more info").contains("Close the browser"));
@@ -678,7 +691,7 @@ mod tests {
     fn args_end_with_separator_and_url() {
         let spec = ArgSpec {
             url: "--exec=calc", format: "video", quality: "1080p", audio_format: "mp3", video_format: "mp4",
-            prefer_h264: true, dir: "C:\\x", name_prefix: Some("05 - 100% "), ffmpeg: None,
+            dir: "C:\\x", name_prefix: Some("05 - 100% "), ffmpeg: None,
             cookies_browser: Some(""), js_runtime: None, plugin_dir: None,
         };
         let a = build_args(&spec);
@@ -697,33 +710,37 @@ mod tests {
     #[test]
     fn picture_is_ranked_before_audio() {
         assert_eq!(
-            video_sort("best", true, false, true),
+            video_sort("best", false, true),
             "res:1080,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
         );
         assert_eq!(
-            video_sort("best", true, false, false),
+            video_sort("best", false, false),
             "vcodec:h264,res:2160,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a"
         );
-        assert_eq!(video_sort("2160p", true, false, true), "res:2160,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
-        for (q, h264, mkv, yt) in [("best", true, false, true), ("best", false, false, false), ("360p", true, false, true)] {
-            let s = video_sort(q, h264, mkv, yt);
-            let at = |f: &str| s.find(f).unwrap();
-            assert!(at("res") < at("acodec") && at("fps") < at("acodec") && at("+hasaud") < at("lang"), "{s}");
+        assert_eq!(video_sort("2160p", false, true), "res:2160,vcodec:h264,+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
+        for (q, mkv, yt) in [("best", false, true), ("best", false, false), ("360p", false, true), ("best", true, true)] {
+            let s = video_sort(q, mkv, yt);
+            let at = |f: &str| s.find(f).unwrap_or(usize::MAX);
+            assert!(at("res") < at("lang") && at("fps") < at("lang") && at("+hasaud") < at("lang"), "{s}");
+            if !mkv {
+                assert!(at("res") < at("acodec") && at("fps") < at("acodec"), "{s}");
+            }
         }
     }
 
     /// Premiere Pro and After Effects import a VP9 or AV1 MP4 as sound with no
-    /// picture. Every MP4 sort ranks H.264 right after the resolution (VP9
-    /// before AV1 for what still needs converting) and SDR first; "best"
-    /// stops at 4K. MKV takes the streams as served.
+    /// picture. "Best" takes the site's H.264 so nothing needs converting (on
+    /// YouTube up to 1080p); a picked quality ranks first with H.264 right
+    /// after it, SDR first. MKV keeps the original: any codec, no cap.
     #[test]
     fn mp4_ranks_h264_after_resolution() {
         let mp4 = |rest: &str| format!("{rest},+hdr,fps,proto,+hasaud,lang,acodec:aac,ext:mp4:m4a");
-        assert_eq!(video_sort("best", false, false, true), mp4("res:2160,vcodec:h264"));
-        assert_eq!(video_sort("2160p", false, false, true), mp4("res:2160,vcodec:h264"));
-        assert_eq!(video_sort("720p", false, false, false), mp4("res:720,vcodec:h264"));
-        assert_eq!(video_sort("best", false, true, true), "res,fps,proto,+hasaud,lang");
-        assert_eq!(video_sort("2160p", false, true, true), "res:2160,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("best", false, true), mp4("res:1080,vcodec:h264"));
+        assert_eq!(video_sort("best", false, false), mp4("vcodec:h264,res:2160"));
+        assert_eq!(video_sort("2160p", false, true), mp4("res:2160,vcodec:h264"));
+        assert_eq!(video_sort("720p", false, false), mp4("res:720,vcodec:h264"));
+        assert_eq!(video_sort("best", true, true), "res,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("2160p", true, true), "res:2160,fps,proto,+hasaud,lang");
     }
 
     #[test]
@@ -732,7 +749,7 @@ mod tests {
         let plugins = Path::new("C:\\Lynk\\yt-dlp-plugins");
         let spec = |url, plugin_dir| ArgSpec {
             url, format: "video", quality: "best", audio_format: "mp3", video_format: "mp4",
-            prefer_h264: true, dir: "C:\\x", name_prefix: None, ffmpeg: None,
+            dir: "C:\\x", name_prefix: None, ffmpeg: None,
             cookies_browser: None, js_runtime: Some(deno), plugin_dir,
         };
         let value = |a: &[String]| {
@@ -769,7 +786,7 @@ mod tests {
         let plugins = Path::new("C:\\Lynk\\yt-dlp-plugins");
         let spec = ArgSpec {
             url: "https://youtu.be/x", format: "audio", quality: "best", audio_format: "mp3",
-            video_format: "mp4", prefer_h264: false, dir: "C:\\x", name_prefix: None,
+            video_format: "mp4", dir: "C:\\x", name_prefix: None,
             ffmpeg: None, cookies_browser: None, js_runtime: Some(deno), plugin_dir: Some(plugins),
         };
         let a = build_args(&spec);
@@ -782,11 +799,11 @@ mod tests {
 
     #[test]
     fn mkv_takes_best_audio_and_remuxes_everything() {
-        assert_eq!(video_sort("best", false, true, true), "res,fps,proto,+hasaud,lang");
-        assert_eq!(video_sort("720p", true, true, false), "res:720,vcodec:h264,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("best", true, true), "res,fps,proto,+hasaud,lang");
+        assert_eq!(video_sort("720p", true, false), "res:720,fps,proto,+hasaud,lang");
         let spec = ArgSpec {
             url: "https://x.y/v", format: "video", quality: "best", audio_format: "mp3",
-            video_format: "mkv", prefer_h264: false, dir: "C:\\x", name_prefix: None,
+            video_format: "mkv", dir: "C:\\x", name_prefix: None,
             ffmpeg: None, cookies_browser: None, js_runtime: None, plugin_dir: None,
         };
         let a = build_args(&spec);

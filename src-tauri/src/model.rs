@@ -23,6 +23,8 @@ pub struct Download {
     pub audio_format: String,
     /// Container for video downloads: `mp4` | `mkv`.
     pub video_format: String,
+    /// The old "Prefer H.264" setting at the time of the download. Kept for
+    /// the database column; lynk now picks the codec itself (parse::video_sort).
     pub prefer_h264: bool,
     pub ext: Option<String>,
     /// Directory the file is saved into.
@@ -113,7 +115,6 @@ pub struct NewDownload {
     pub audio_format: String,
     #[serde(default = "default_video_format")]
     pub video_format: String,
-    pub prefer_h264: bool,
     pub save_path: String,
 }
 

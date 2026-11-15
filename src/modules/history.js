@@ -7,6 +7,7 @@ import { esc } from './dom.js'
 import { dayLabel, siteName } from './format.js'
 import { confirm } from './dialog.js'
 import { createRow, updateRow, createGroupRow, updateGroupRow, isActive } from './card.js'
+import { openSignInMenu } from './signin.js'
 
 const PAGE = 150
 const records = new Map()
@@ -181,11 +182,9 @@ function onClick(e) {
     return
   }
   if (!btn) return
-  store.emit(EVENTS.DOWNLOAD_ACTION, {
-    action: btn.dataset.action,
-    id: btn.closest('[data-id]')?.dataset.id,
-    groupId,
-  })
+  const id = btn.closest('[data-id]')?.dataset.id
+  if (btn.dataset.action === 'sign-in') return openSignInMenu(btn, id)
+  store.emit(EVENTS.DOWNLOAD_ACTION, { action: btn.dataset.action, id, groupId })
 }
 
 async function clearHistory() {

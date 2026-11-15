@@ -40,7 +40,10 @@ const STALL_PROCESSING: Duration = Duration::from_secs(30 * 60);
 /// ffmpeg reports progress twice a second while it converts.
 const CONVERT_STALL: Duration = Duration::from_secs(120);
 const CONVERT_FAILED: &str =
-    "Couldn't convert the video to H.264 for editing apps. Retry, or pick MKV in Settings to keep it as downloaded.";
+    "Couldn't convert the video for editing apps. Retry, or choose MKV in the format menu to keep it as downloaded.";
+/// Downloads that run at the same time. Up to 0.1.4 this was the "At once"
+/// setting; YouTube pages are read one at a time anyway (see `youtube_gate`).
+const MAX_CONCURRENT: usize = 3;
 
 /// Ids an update restart stopped, queued again on the next launch.
 const RESUME_PREF: &str = "resume_after_restart";
@@ -63,7 +66,6 @@ struct Inner {
     queue: VecDeque<String>,
     running: HashMap<String, Running>,
     playlists: HashMap<String, Vec<PlaylistEntry>>,
-    max_concurrent: usize,
 }
 
 struct Running {
@@ -140,17 +142,12 @@ impl Run {
 
 impl Manager {
     pub fn new(app: AppHandle, db: Arc<Db>, engine: Arc<Engine>, youtube: Arc<YouTube>) -> Arc<Self> {
-        let max = db
-            .pref("max_concurrent")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3usize)
-            .clamp(1, 5);
         Arc::new(Manager {
             app,
             db,
             engine,
             youtube,
-            inner: Mutex::new(Inner { max_concurrent: max, ..Default::default() }),
+            inner: Mutex::new(Inner::default()),
             youtube_gate: Gate::default(),
             shutting_down: AtomicBool::new(false),
             last_indicator: Mutex::new(None),
@@ -195,7 +192,7 @@ impl Manager {
                 quality: n.quality,
                 audio_format: n.audio_format,
                 video_format: n.video_format,
-                prefer_h264: n.prefer_h264,
+                prefer_h264: true,
                 save_path: Some(n.save_path),
                 status: "queued".into(),
                 // Newest-first lists then show a pasted batch in pasted order.
@@ -365,11 +362,6 @@ impl Manager {
         staging::sweep(dirs, &keep);
     }
 
-    pub fn set_max_concurrent(self: &Arc<Self>, n: usize) {
-        self.lock().max_concurrent = n.clamp(1, 5);
-        self.pump();
-    }
-
     /// Turns a detected playlist into one queued download per entry, saved
     /// into a subfolder named after the playlist.
     pub fn confirm_playlist(self: &Arc<Self>, id: &str) -> Result<usize, String> {
@@ -533,7 +525,7 @@ impl Manager {
             let next = {
                 let mut inner = self.lock();
                 if self.shutting_down.load(Ordering::SeqCst)
-                    || inner.running.len() >= inner.max_concurrent
+                    || inner.running.len() >= MAX_CONCURRENT
                 {
                     return;
                 }
@@ -625,7 +617,6 @@ impl Manager {
                 quality: &rec.quality,
                 audio_format: &rec.audio_format,
                 video_format: &rec.video_format,
-                prefer_h264: rec.prefer_h264,
                 dir: &dir,
                 name_prefix: rec.name_prefix.as_deref(),
                 ffmpeg: ffmpeg.as_deref(),
@@ -715,6 +706,10 @@ impl Manager {
             if let Some(f) = expected_outputs(rec, &st.expected).into_iter().find(|p| p.is_file()) {
                 return deliver(Some(f), &save_dir, &rec.id);
             }
+        }
+        // A newer yt-dlp usually fixes these; don't wait for the daily check.
+        if parse::engine_may_be_outdated(&raw) {
+            self.engine.update_soon();
         }
         Outcome::Failed { message: parse::humanize_error(&raw), detail: Some(parse::clean_error(&raw)) }
     }

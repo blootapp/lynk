@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::model::Download;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// Single shared SQLite connection. Every access goes through `conn()`, so
 /// writes from download threads and commands are serialized and ordered.
@@ -229,6 +229,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     if version < 3 && !has_column(conn, "video_format")? {
         conn.execute_batch("ALTER TABLE downloads ADD COLUMN video_format TEXT")?;
     }
+    if version < 4 {
+        migrate_v4(conn)?;
+    }
     if version < SCHEMA_VERSION {
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -320,19 +323,36 @@ fn migrate_v2(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// After 0.1.4, lynk decides three former settings itself: "Prefer H.264"
+/// (see `parse::video_sort`), "At once" (always 3) and "Update
+/// automatically" (always on). "Best" with Prefer H.264 off asked for the
+/// highest resolution, which for MP4 is exactly "4K" now, so those people
+/// keep getting 4K.
+fn migrate_v4(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "UPDATE preferences SET value = '2160p'
+          WHERE key = 'default_quality' AND value = 'best'
+            AND EXISTS (SELECT 1 FROM preferences WHERE key = 'prefer_h264' AND value = 'false')
+            AND NOT EXISTS (SELECT 1 FROM preferences WHERE key = 'video_format' AND value = 'mkv')",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM preferences WHERE key IN ('prefer_h264', 'max_concurrent', 'ytdlp_auto_update')",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Seeds defaults for any missing preference keys.
 pub fn seed_preferences(db: &Db, default_save_path: &Path) -> Result<()> {
     let save = default_save_path.to_string_lossy().to_string();
-    let defaults: [(&str, &str); 11] = [
+    let defaults: [(&str, &str); 8] = [
         ("default_quality", "best"),
         ("default_format", "video"),
         ("audio_format", "mp3"),
         ("video_format", "mp4"),
         ("ask_save_path", "false"),
-        ("prefer_h264", "true"),
-        ("max_concurrent", "3"),
         ("notifications", "true"),
-        ("ytdlp_auto_update", "true"),
         ("cookies_browser", ""),
         ("save_path", &save),
     ];
@@ -354,4 +374,51 @@ pub fn data_dir() -> PathBuf {
     let p = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".lynk");
     std::fs::create_dir_all(&p).ok();
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prefs_with(pairs: &[(&str, &str)]) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);").unwrap();
+        for (k, v) in pairs {
+            conn.execute("INSERT INTO preferences (key, value) VALUES (?1, ?2)", params![k, v]).unwrap();
+        }
+        conn
+    }
+
+    fn get(conn: &Connection, key: &str) -> Option<String> {
+        conn.query_row("SELECT value FROM preferences WHERE key = ?1", [key], |r| r.get(0)).optional().unwrap()
+    }
+
+    /// "Best" with Prefer H.264 off meant the highest resolution; for MP4
+    /// that's "4K" now. Everyone else keeps their choice, and the three
+    /// settings lynk now decides itself are gone.
+    #[test]
+    fn v4_keeps_4k_and_drops_decided_settings() {
+        let off = prefs_with(&[
+            ("default_quality", "best"), ("prefer_h264", "false"), ("video_format", "mp4"),
+            ("max_concurrent", "5"), ("ytdlp_auto_update", "false"), ("cookies_browser", "firefox"),
+        ]);
+        migrate_v4(&off).unwrap();
+        assert_eq!(get(&off, "default_quality").as_deref(), Some("2160p"));
+        for gone in ["prefer_h264", "max_concurrent", "ytdlp_auto_update"] {
+            assert_eq!(get(&off, gone), None, "{gone}");
+        }
+        assert_eq!(get(&off, "cookies_browser").as_deref(), Some("firefox"));
+
+        let on = prefs_with(&[("default_quality", "best"), ("prefer_h264", "true"), ("video_format", "mp4")]);
+        migrate_v4(&on).unwrap();
+        assert_eq!(get(&on, "default_quality").as_deref(), Some("best"));
+
+        let mkv = prefs_with(&[("default_quality", "best"), ("prefer_h264", "false"), ("video_format", "mkv")]);
+        migrate_v4(&mkv).unwrap();
+        assert_eq!(get(&mkv, "default_quality").as_deref(), Some("best"));
+
+        let picked = prefs_with(&[("default_quality", "720p"), ("prefer_h264", "false")]);
+        migrate_v4(&picked).unwrap();
+        assert_eq!(get(&picked, "default_quality").as_deref(), Some("720p"));
+    }
 }

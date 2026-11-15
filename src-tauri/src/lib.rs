@@ -112,6 +112,7 @@ pub fn run() {
             commands::app_quit,
             commands::get_preferences,
             commands::set_preference,
+            commands::installed_browsers,
             commands::get_default_save_path,
             commands::open_path,
             commands::reveal_path,

@@ -74,7 +74,6 @@ async function submit({ text, format }) {
       quality: prefs.get('default_quality', 'best'),
       audio_format: prefs.get('audio_format', 'mp3'),
       video_format: prefs.get('video_format', 'mp4') === 'mkv' ? 'mkv' : 'mp4',
-      prefer_h264: prefs.get('prefer_h264', 'true') !== 'false',
       save_path: savePath,
     })))
     if (dupes.length) toast(t.someAlreadyDownloading(dupes.length))

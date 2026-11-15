@@ -12,6 +12,7 @@ export const appQuit        = () => invoke('app_quit')
 
 export const getPreferences = () => invoke('get_preferences')
 export const setPreference  = (key, value) => invoke('set_preference', { key, value: String(value) })
+export const installedBrowsers = () => invoke('installed_browsers')
 
 // ── Files ────────────────────────────────────────────────────────────────────
 

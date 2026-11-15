@@ -5,6 +5,7 @@ import { t } from './i18n.js'
 import { esc, el } from './dom.js'
 import { icon } from './icons.js'
 import { formatBytes, formatSpeed, formatEta, siteName, formatLabel, timeOfDay, hostOf } from './format.js'
+import { needsSignIn } from './signin.js'
 
 const ACTIVE = new Set(['queued', 'fetching', 'downloading', 'processing'])
 
@@ -108,7 +109,10 @@ function actionsFor(d, ctx) {
     ]
   }
   if (isFinished(d)) {
-    return [{ action: 'retry', icon: 'rotate-cw', label: d.status === 'done' ? t.redownload : t.retry }, close]
+    const retry = { action: 'retry', icon: 'rotate-cw', label: d.status === 'done' ? t.redownload : t.retry }
+    // Age-restricted, private and the like: offer the browser sign-in here.
+    if (needsSignIn(d)) return [{ action: 'sign-in', icon: 'log-in', label: t.rowSignIn }, retry, close]
+    return [retry, close]
   }
   return []
 }
